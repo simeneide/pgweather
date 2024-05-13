@@ -352,17 +352,7 @@ def latlon_to_xy(lat, lon):
 # %%
 def show_forecast():
 
-    with st.spinner('Fetching data...'):        
-        @st.cache_data
-        def load_data(filepath):
-            local=False
-            if local:
-                subset = xr.open_dataset("subset.nc")
-            else:
-                subset = load_meps_for_location(filepath)
-                subset.to_netcdf("subset.nc")
-            return subset
-        
+    with st.spinner('Fetching data...'):                
         if "file_path" not in st.session_state:
             st.session_state.file_path = find_latest_meps_file()
         subset = load_data(st.session_state.file_path)
@@ -471,6 +461,15 @@ def show_forecast():
     st.session_state.file_path = find_latest_meps_file()
     subset = load_data(st.session_state.file_path)
 
+@st.cache_data
+def load_data(filepath):
+    local=False
+    if local:
+        subset = xr.open_dataset("subset.nc")
+    else:
+        subset = load_meps_for_location(filepath)
+        subset.to_netcdf("subset.nc")
+    return subset
 
 if __name__ == "__main__":
     run_streamlit = True
@@ -483,12 +482,7 @@ if __name__ == "__main__":
         x_target, y_target = latlon_to_xy(lat, lon)
         
         dataset_file_path = find_latest_meps_file()
-        local=True
-        if local:
-            subset = xr.open_dataset("subset.nc")
-        else:
-            subset = load_meps_for_location()
-            subset.to_netcdf("subset.nc")
+        subset = load_data(dataset_file_path)
 
         build_map_overlays(subset, date="2024-05-14", hour="16")
 
