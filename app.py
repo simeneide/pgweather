@@ -363,7 +363,7 @@ def show_forecast():
         now = datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
 
         if "forecast_date" not in st.session_state:
-            st.session_state.forecast_date = now.date()
+            st.session_state.forecast_date = (now + datetime.timedelta(days=1)).date()
         if "forecast_time" not in st.session_state:
             st.session_state.forecast_time = datetime.time(14,0)
         if "forecast_length" not in st.session_state:
