@@ -7,159 +7,73 @@ import pandas as pd
 import matplotlib.colors as mcolors
 import streamlit as st
 import datetime
-import matplotlib.dates as mdates
 from scipy.interpolate import griddata
-import folium
 import branca.colormap as cm
+import os
+from utils import latlon_to_xy
+import plotly.graph_objects as go
+from matplotlib.colors import to_hex, LinearSegmentedColormap
+from streamlit_plotly_events import plotly_events
 
 
-@st.cache_data(ttl=60)
-def find_latest_meps_file():
-    # The MEPS dataset: https://github.com/metno/NWPdocs/wiki/MEPS-dataset
-    today = datetime.datetime.today()
-    catalog_url = f"https://thredds.met.no/thredds/catalog/meps25epsarchive/{today.year}/{today.month:02d}/{today.day:02d}/catalog.xml"
-    file_url_base = f"https://thredds.met.no/thredds/dodsC/meps25epsarchive/{today.year}/{today.month:02d}/{today.day:02d}"
-    # Get the datasets from the catalog
-    catalog = TDSCatalog(catalog_url)
-    datasets = [s for s in catalog.datasets if "meps_det_ml" in s]
-    file_path = f"{file_url_base}/{sorted(datasets)[-1]}"
-    return file_path
-
-
-@st.cache_data()
-def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=3000):
+@st.cache_data(ttl=7200)
+def load_data():
     """
-    file_path=None
-    altitude_min=0
-    altitude_max=3000
+    Loads a NetCDF file containing forecast data. Example
+    <xarray.Dataset> Size: 483MB
+    Dimensions:               (altitude: 34, time: 67, y: 81, x: 81)
+    Coordinates:
+        height                float32 4B 0.0
+        hybrid                (altitude) float64 272B 0.6784 0.6984 ... 0.9985
+    * x                     (x) float32 324B -5.101e+05 -5.076e+05 ... -3.101e+05
+    * y                     (y) float32 324B -2.825e+05 -2.8e+05 ... -8.252e+04
+    * time                  (time) datetime64[ns] 536B 2025-03-13T12:00:00 ... ...
+        longitude             (y, x) float64 52kB 5.684 5.729 5.774 ... 8.919 8.967
+        latitude              (y, x) float64 52kB 60.43 60.43 60.43 ... 62.42 62.43
+    * altitude              (altitude) float64 272B 2.89e+03 2.684e+03 ... 11.66
+    Data variables:
+        ap                    (altitude) float64 272B 5.682e+03 5.01e+03 ... 0.0 0.0
+        b                     (altitude) float64 272B 0.6223 0.6489 ... 0.9985
+        air_temperature_ml    (time, altitude, y, x) float32 60MB 252.5 ... 260.7
+        x_wind_ml             (time, altitude, y, x) float32 60MB -1.6 ... 5.709
+        y_wind_ml             (time, altitude, y, x) float32 60MB -11.19 ... -10.67
+        surface_air_pressure  (time, y, x, altitude) float32 60MB 9.46e+04 ... 8....
+        elevation             (y, x, altitude) float32 892kB 465.8 ... 1.543e+03
+        air_temperature_0m    (time, y, x, altitude) float32 60MB 278.6 ... 261.1
+        wind_speed            (time, altitude, y, x) float32 60MB 11.31 ... 12.1
+        thermal_temp_diff     (time, y, x, altitude) float64 120MB 2.331 ... 0.3471
+        thermal_top           (time, y, x) float64 4MB 2.89e+03 ... 2.89e+03
+    Attributes: (12/41)
+        min_time:                    2025-03-13T12:00:00Z
+        geospatial_lat_min:          49.8
+        geospatial_lat_max:          75.2
+        geospatial_lon_min:          -18.1
+        geospatial_lon_max:          54.2
+        comment:                     For more information, please visit https://g...
+        ...                          ...
+        publisher_name:              Norwegian Meteorological Institute
+        summary:                     This file contains model level parameters fr...
+        summary_no:                  Denne filen inneholder modelnivåparametere f...
+        title:                       Meps 2.5Km deterministic model level paramet...
+        title_no:                    Meps 2.5Km deterministisk modellnivåparamete...
+        related_dataset:             no.met:8c94c7de-6328-4113-9e77-8f090999fab9 ...
     """
+    # Find all files in the forecasts directory
+    forecast_dir = "forecasts"
+    # Get a list of all NetCDF files
+    nc_files = [f for f in os.listdir(forecast_dir) if f.endswith(".nc")]
+    if not nc_files:
+        raise FileNotFoundError("No forecast files found in the 'forecasts' directory")
 
-    if file_path is None:
-        file_path = find_latest_meps_file()
+    # Sort files by their timestamp, assuming the filenames contain the timestamp
+    nc_files.sort()
 
-    x_range = "[220:1:300]"
-    y_range = "[420:1:500]"
-    time_range = "[0:1:66]"
-    hybrid_range = "[25:1:64]"
-    height_range = "[0:1:0]"
+    # Choose the latest file
+    latest_file = os.path.join(forecast_dir, nc_files[-1])
 
-    params = {
-        "x": x_range,
-        "y": y_range,
-        "time": time_range,
-        "hybrid": hybrid_range,
-        "height": height_range,
-        "longitude": f"{y_range}{x_range}",
-        "latitude": f"{y_range}{x_range}",
-        "air_temperature_ml": f"{time_range}{hybrid_range}{y_range}{x_range}",
-        "ap": f"{hybrid_range}",
-        "b": f"{hybrid_range}",
-        "surface_air_pressure": f"{time_range}{height_range}{y_range}{x_range}",
-        "x_wind_ml": f"{time_range}{hybrid_range}{y_range}{x_range}",
-        "y_wind_ml": f"{time_range}{hybrid_range}{y_range}{x_range}",
-    }
-
-    path = f"{file_path}?{','.join(f'{k}{v}' for k, v in params.items())}"
-
-    subset = xr.open_dataset(path, cache=True)
-    subset.load()
-
-    # %% get geopotential
-    time_range_sfc = "[0:1:0]"
-    surf_params = {
-        "x": x_range,
-        "y": y_range,
-        "time": f"{time_range}",
-        "surface_geopotential": f"{time_range_sfc}[0:1:0]{y_range}{x_range}",
-        "air_temperature_0m": f"{time_range}[0:1:0]{y_range}{x_range}",
-    }
-    file_path_surf = f"{file_path.replace('meps_det_ml', 'meps_det_sfc')}?{','.join(f'{k}{v}' for k, v in surf_params.items())}"
-
-    # Load surface parameters and merge into the main dataset
-    surf = xr.open_dataset(file_path_surf, cache=True)
-    # Convert the surface geopotential to elevation
-    elevation = (surf.surface_geopotential / 9.80665).squeeze()
-    # elevation.plot()
-    subset["elevation"] = elevation
-    air_temperature_0m = surf.air_temperature_0m.squeeze()
-    subset["air_temperature_0m"] = air_temperature_0m
-
-    # subset.elevation.plot()
-    # %%
-    def hybrid_to_height(ds):
-        """
-        ds = subset
-        """
-        # Constants
-        R = 287.05  # Gas constant for dry air
-        g = 9.80665  # Gravitational acceleration
-
-        # Calculate the pressure at each level
-        p = ds["ap"] + ds["b"] * ds["surface_air_pressure"]  # .mean("ensemble_member")
-
-        # Get the temperature at each level
-        T = ds["air_temperature_ml"]  # .mean("ensemble_member")
-
-        # Calculate the height difference between each level and the surface
-        dp = ds["surface_air_pressure"] - p  # Pressure difference
-        dT = T - T.isel(hybrid=-1)  # Temperature difference relative to the surface
-        dT_mean = 0.5 * (T + T.isel(hybrid=-1))  # Mean temperature
-
-        # Calculate the height using the hypsometric equation
-        dz = (R * dT_mean / g) * np.log(ds["surface_air_pressure"] / p)
-
-        return dz
-
-    altitude = hybrid_to_height(subset).mean("time").squeeze().mean("x").mean("y")
-    subset = subset.assign_coords(altitude=("hybrid", altitude.data))
-    subset = subset.swap_dims({"hybrid": "altitude"})
-
-    # filter subset on altitude ranges
-    subset = subset.where(
-        (subset.altitude >= altitude_min) & (subset.altitude <= altitude_max), drop=True
-    ).squeeze()
-
-    wind_speed = np.sqrt(subset["x_wind_ml"] ** 2 + subset["y_wind_ml"] ** 2)
-    subset = subset.assign(wind_speed=(("time", "altitude", "y", "x"), wind_speed.data))
-
-    subset["thermal_temp_diff"] = compute_thermal_temp_difference(subset)
-    # subset = subset.assign(thermal_temp_diff=(('time', 'altitude','y','x'), thermal_temp_diff.data))
-
-    # Find the indices where the thermal temperature difference is zero or negative
-    # Create tiny value at ground level to avoid finding the ground as the thermal top
-    thermal_temp_diff = subset["thermal_temp_diff"]
-    thermal_temp_diff = thermal_temp_diff.where(
-        (thermal_temp_diff.sum("altitude") > 0)
-        | (subset["altitude"] != subset.altitude.min()),
-        thermal_temp_diff + 1e-6,
-    )
-    indices = (thermal_temp_diff > 0).argmax(dim="altitude")
-    # Get the altitudes corresponding to these indices
-    thermal_top = subset.altitude[indices]
-    subset = subset.assign(thermal_top=(("time", "y", "x"), thermal_top.data))
-    subset = subset.set_coords(["latitude", "longitude"])
-
+    # Load the dataset from the latest file
+    subset = xr.open_dataset(latest_file)
     return subset
-
-
-# %%
-def compute_thermal_temp_difference(subset):
-    lapse_rate = 0.0098
-    ground_temp = subset.air_temperature_0m - 273.3
-    air_temp = subset["air_temperature_ml"] - 273.3  # .ffill(dim='altitude')
-
-    # dimensions
-    # 'air_temperature_ml'  altitude: 4 y: 3, x: 3
-    # 'elevation'                       y: 3  x: 3
-    # 'altitude'            altitude: 4
-
-    # broadcast ground temperature to all altitudes, but let it decrease by lapse rate
-    altitude_diff = subset.altitude - subset.elevation
-    altitude_diff = altitude_diff.where(altitude_diff >= 0, 0)
-    temp_decrease = lapse_rate * altitude_diff
-    ground_parcel_temp = ground_temp - temp_decrease
-    thermal_temp_diff = (ground_parcel_temp - air_temp).clip(min=0)
-    return thermal_temp_diff
 
 
 def wind_and_temp_colorscales(wind_max=20, tempdiff_max=8):
@@ -185,17 +99,19 @@ def wind_and_temp_colorscales(wind_max=20, tempdiff_max=8):
     return windcolors, tempcolors
 
 
-import plotly.graph_objects as go
-import numpy as np
-import pandas as pd
-import datetime
-
-
 @st.cache_data(ttl=60)
 def create_wind_map(
-    subset, x_target, y_target, altitude_max=4000, date_start=None, date_end=None
+    _subset, x_target, y_target, altitude_max=4000, date_start=None, date_end=None
 ):
-    subset_data = subset
+    """
+    _subset = subset
+    altitude_max = 3000
+    x_target = -422175.14005226345
+    y_target = -204279.84596708667
+
+
+    """
+    subset = _subset
 
     wind_min, wind_max = 0.3, 20
     tempdiff_min, tempdiff_max = 0, 8
@@ -212,11 +128,9 @@ def create_wind_map(
 
     # Resample time and altitude for the wind plot data.
     new_timestamps = pd.date_range(date_start, date_end, 20)
-    new_altitude = np.arange(
-        subset_data.elevation.mean(), altitude_max, altitude_max / 20
-    )
+    new_altitude = np.arange(subset.elevation.mean(), altitude_max, altitude_max / 20)
 
-    windplot_data = subset_data.sel(x=x_target, y=y_target, method="nearest")
+    windplot_data = subset.sel(x=x_target, y=y_target, method="nearest")
     windplot_data = windplot_data.interp(altitude=new_altitude, time=new_timestamps)
 
     # Convert data for Plotly heatmap
@@ -250,7 +164,7 @@ def create_wind_map(
                 colorscale=wind_colors,
                 colorbar=dict(title="Wind Speed (m/s)"),
             ),
-            text=[f"Speed: {s:.2f} m/s" for s in speed.flatten()],
+            # text=[f"Speed: {s:.2f} m/s" for s in speed.squeeze()],
             hoverinfo="text",
         )
     )
@@ -337,207 +251,470 @@ def create_sounding(_subset, date, hour, x_target, y_target, altitude_max=3000):
     return fig
 
 
-@st.cache_data(ttl=7200)
-def build_map_overlays(_subset, date=None, hour=None):
-    """
-    date = "2024-05-13"
-    hour = "15"
-    x_target=None
-    y_target=None
-    """
+# %%
+def date_controls(subset):
+    start_stop_time = [
+        subset.time.min().values.astype("M8[D]").astype("O"),
+        subset.time.max().values.astype("M8[D]").astype("O"),
+    ]
+    now = datetime.datetime.now().replace(minute=0, second=0, microsecond=0).date()
+
+    if "forecast_date" not in st.session_state:
+        st.session_state.forecast_date = now
+    if "forecast_time" not in st.session_state:
+        st.session_state.forecast_time = datetime.time(14, 0)
+    if "altitude_max" not in st.session_state:
+        st.session_state.altitude_max = 3000
+    if "target_latitude" not in st.session_state:
+        st.session_state.target_latitude = 61.22908
+    if "target_longitude" not in st.session_state:
+        st.session_state.target_longitude = 7.09674
+
+    # Generate available days within the dataset's time range
+    available_days = pd.date_range(
+        start=start_stop_time[0], end=start_stop_time[1]
+    ).date
+
+    day_cols = st.columns(len(available_days))  # Create columns for each available day
+
+    for i, day in enumerate(available_days):
+        label = day.strftime("%A")  # Get day label
+        if day == now:
+            label += " (today)"
+        with day_cols[i]:  # Place each button in its respective column
+            if st.button(label):
+                st.session_state.forecast_date = day
+
+    # Group hours into smaller rows for better layout
+    hours_per_row = 24  # Define how many hour buttons to display per row
+    available_hours = range(7, 22, 1)  # 24-hour format
+
+    # Divide hours into batches
+    hour_batches = [
+        available_hours[i : i + hours_per_row]
+        for i in range(0, len(available_hours), hours_per_row)
+    ]
+
+    # Display hour buttons in rows
+    for batch in hour_batches:
+        hour_cols = st.columns(len(batch))
+        for i, hour in enumerate(batch):
+            label = f"{hour:02}:00"
+            with hour_cols[i]:
+                if st.button(label):
+                    st.session_state.forecast_time = datetime.time(hour, 0)
+
+
+def build_map(_subset, date=None, hour=None):
     subset = _subset
 
-    # Get the latitude and longitude values from the dataset
     latitude_values = subset.latitude.values.flatten()
     longitude_values = subset.longitude.values.flatten()
-    thermal_top_values = subset.thermal_top.sel(time=f"{date}T{hour}").values.flatten()
-    # thermal_top_values = subset.elevation.mean("altitude").values.flatten()
-    # Convert the irregular grid data into a regular grid
-    step_lon, step_lat = (
-        subset.longitude.diff("x").quantile(0.1).values,
-        subset.latitude.diff("y").quantile(0.1).values,
+    thermal_top_values = (
+        subset.thermal_top.sel(time=f"{date}T{hour}").values.flatten().round()
     )
-    grid_x, grid_y = np.mgrid[
-        min(latitude_values) : max(latitude_values) : step_lat,
-        min(longitude_values) : max(longitude_values) : step_lon,
+
+    # Use Plotly's scattermap for visualization and enable click events
+    scatter_map = go.Scattermap(
+        lat=latitude_values,
+        lon=longitude_values,
+        mode="markers",
+        marker=go.scattermap.Marker(
+            size=9,
+            color=thermal_top_values,
+            colorscale="Viridis",
+            colorbar=dict(title="Thermal Height (m)"),
+        ),
+        text=[f"Thermal Height: {ht} m" for ht in thermal_top_values],
+        hoverinfo="text",
+    )
+
+    fig = go.Figure(scatter_map)
+
+    fig.update_layout(
+        map_style="open-street-map",
+        map=dict(center=dict(lat=61.22908, lon=7.09674), zoom=9),
+        margin={"r": 0, "t": 0, "l": 0, "b": 0},
+    )
+
+    # Register click event callback
+
+    return fig
+
+
+from plotly.subplots import make_subplots
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from plotly.subplots import make_subplots
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+
+
+def interpolate_color(
+    wind_speed, thresholds=[2, 8, 14], colors=["white", "green", "red", "black"]
+):
+    # Normalize thresholds to range [0, 1]
+    norm_thresholds = [t / max(thresholds) for t in thresholds]
+    norm_thresholds = [0] + norm_thresholds + [1]
+
+    # Extend color list to match normalized thresholds
+    extended_colors = [colors[0]] + colors + [colors[-1]]
+
+    # Create colormap
+    cmap = LinearSegmentedColormap.from_list(
+        "wind_speed_cmap", list(zip(norm_thresholds, extended_colors)), N=256
+    )
+
+    # Normalize wind speed to range [0, 1] and get color
+    norm_wind_speed = wind_speed / max(thresholds)
+    return to_hex(cmap(np.clip(norm_wind_speed, 0, 1)))
+
+
+def create_daily_thermal_and_wind_airgram(subset, x_target, y_target, date):
+    """
+    Create a Plotly subplot figure for a single day's thermal and wind data.
+    The top subplot shows wind data as arrows for direction and color for strength.
+    The bottom subplot shows thermal temperature differences.
+    """
+    # Define the time window to display
+    display_start_hour = 7
+    display_end_hour = 21
+
+    # Extract the day that matches the provided date
+    start_date = pd.Timestamp(date).normalize()
+    end_date = start_date + pd.Timedelta(days=1)
+
+    # Select data for the given date
+    daily_data = subset.sel(time=slice(start_date, end_date))
+
+    # Create time mask for the given display window
+    time_values = pd.to_datetime(
+        daily_data.time.values
+    )  # Convert numpy.datetime64 to datetime
+
+    mask = [(display_start_hour <= t.hour < display_end_hour) for t in time_values]
+
+    # Filter data within the specified hours
+    daily_data = daily_data.isel(time=mask)
+
+    # Select nearest points for the supplied x and y indices
+    location_data = daily_data.sel(x=x_target, y=y_target, method="nearest")
+
+    # Interpolating the data for visualization
+    new_timestamps = pd.date_range(
+        start=start_date, end=end_date, freq="h"
+    )  # Every full hour
+
+    # Remove timestamps that are outside the range of the data
+    new_timestamps = new_timestamps[
+        (new_timestamps >= location_data.time.min().values)
+        & (new_timestamps <= location_data.time.max().values)
     ]
-    grid_z = griddata(
-        (latitude_values, longitude_values),
-        thermal_top_values,
-        (grid_x, grid_y),
-        method="linear",
-    )
-    grid_z = np.nan_to_num(grid_z, copy=False, nan=0)
-    # Normalize the grid data to a range suitable for image display
-    heightcolor = cm.LinearColormap(
-        colors=["white", "white", "green", "yellow", "orange", "red", "darkblue"],
-        index=[0, 500, 1000, 1500, 2000, 2500, 3000],
-        vmin=0,
-        vmax=3000,
-        caption="Thermal Height (m)",
-    )
 
-    bounds = [
-        [min(latitude_values), min(longitude_values)],
-        [max(latitude_values), max(longitude_values)],
+    altitudes_thermal = np.arange(0, 3000, 200)  # Every 200 meters
+    altitudes_thermal = altitudes_thermal[
+        (altitudes_thermal >= location_data.altitude.min().values)
+        & (altitudes_thermal <= location_data.altitude.max().values)
     ]
-    img_overlay = folium.raster_layers.ImageOverlay(
-        image=grid_z,
-        bounds=bounds,
-        colormap=heightcolor,
-        opacity=0.4,
-        mercator_project=True,
-        origin="lower",
-        pixelated=False,
+
+    # Interpolate thermal temperature difference for the specified times and altitudes
+    thermal_diff = (
+        location_data["thermal_temp_diff"]
+        .interp(time=new_timestamps, altitude=altitudes_thermal)
+        .T.values
     )
 
-    return img_overlay, heightcolor
+    # Generating time labels for the x-axis
+    times = [t.strftime("%H:%M") for t in new_timestamps]
 
+    # Calculate wind data at 500m intervals
+    altitudes_wind = np.arange(0, 3000, 500)
+    altitudes_wind = altitudes_wind[
+        (altitudes_wind >= location_data.altitude.min().values)
+        & (altitudes_wind <= location_data.altitude.max().values)
+    ]
 
-# %%
-import pyproj
-
-
-def latlon_to_xy(lat, lon):
-    crs = pyproj.CRS.from_cf(
-        {
-            "grid_mapping_name": "lambert_conformal_conic",
-            "standard_parallel": [63.3, 63.3],
-            "longitude_of_central_meridian": 15.0,
-            "latitude_of_projection_origin": 63.3,
-            "earth_radius": 6371000.0,
-        }
+    x_wind = location_data["x_wind_ml"].interp(
+        time=new_timestamps, altitude=altitudes_wind
     )
-    # Transformer to project from ESPG:4368 (WGS:84) to our lambert_conformal_conic
-    proj = pyproj.Proj.from_crs(4326, crs, always_xy=True)
+    y_wind = location_data["y_wind_ml"].interp(
+        time=new_timestamps, altitude=altitudes_wind
+    )
 
-    # Compute projected coordinates of lat/lon point
-    X, Y = proj.transform(lon, lat)
-    return X, Y
+    # Calculate wind speed and direction
+    speed = np.sqrt(x_wind**2 + y_wind**2).T.values
+    angles = np.rad2deg(np.arctan2(y_wind, x_wind)).T.values  # Convert to degrees
+    angles = angles = (angles + 90) % 360
+    # Create a subplot figure with shared x-axis
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        row_heights=[0.3, 0.7],
+        vertical_spacing=0.05,
+        subplot_titles=("Wind Speed and Direction", "Thermal Temperature Difference"),
+    )
+
+    # Add wind data plot as rotated triangular markers with a common legend
+    for i, alt in enumerate(altitudes_wind):
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=[alt] * len(times),
+                mode="markers",
+                marker=dict(
+                    symbol="arrow",
+                    size=20,
+                    angle=angles[i],
+                    color=[interpolate_color(s) for s in speed[i]],
+                    # colorscale="Viridis",
+                    showscale=False,  # Hide individual color scales
+                    cmin=0,
+                    cmax=20,
+                ),
+                hoverinfo="text",
+                text=[
+                    f"Alt: {alt} m, Speed: {spd:.1f} m/s, Direction: {angle:.1f}°"
+                    for spd, angle in zip(speed[i], angles[i])
+                ],
+            ),
+            row=1,
+            col=1,
+        )
+        fig.update_layout(showlegend=False)
+
+    # Add a legend indicator for the wind speed at the right of the plots
+    fig.add_shape(
+        type="rect",
+        x0=1.05,
+        y0=0.2,
+        x1=1.10,
+        y1=0.8,
+        xref="paper",
+        yref="paper",
+        line=dict(width=0),
+        fillcolor="rgba(0,0,0,0)",
+    )
+
+    annotations = [
+        dict(
+            x=1.15,
+            y=y,
+            text=f"{int(s)} m/s",
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+        )
+        for y, s in zip(np.linspace(0.2, 0.8, 5), range(0, 20, 5))
+    ]
+    fig.update_layout(annotations=annotations)
+
+    # Add thermal data plot
+    fig.add_trace(
+        go.Heatmap(
+            z=thermal_diff,
+            x=times,
+            y=altitudes_thermal,
+            colorscale="YlGn",
+            colorbar=dict(
+                title="Thermal Temp Difference (°C)",
+                thickness=10,
+                ypad=75,  # Moves the color bar vertically
+            ),
+            zmin=0,
+            zmax=8,
+            text=thermal_diff.round(1),
+            texttemplate="%{text}",
+            textfont={"size": 12},
+        ),
+        row=2,
+        col=1,
+    )
+
+    # Update layout
+    fig.update_layout(
+        height=800,
+        width=950,
+        title=f"Thermal and Wind Profiles for {start_date.strftime('%Y-%m-%d')}",
+        xaxis=dict(title="Time"),
+        yaxis=dict(title="Altitude (m)"),
+        xaxis2=dict(title="Time", tickangle=-45),
+        yaxis1=dict(title="Altitude (m)", range=[0, 3000]),
+    )
+
+    return fig
 
 
-# %%
+def create_daily_airgram(subset, x_target, y_target, date):
+    """
+    Create a Plotly heatmap for a single day's wind and thermal data.
+
+    :param subset: xarray Dataset containing the weather data.
+    :param x_target: The x-coordinate index (not longitude) of the target location.
+    :param y_target: The y-coordinate index (not latitude) of the target location.
+    :param date: The specific date for which the data is visualized (datetime object).
+    :return: A Plotly figure object.
+    """
+    # Define the time window to display
+    display_start_hour = 7
+    display_end_hour = 21
+
+    # Extract the day that matches the provided date
+    start_date = pd.Timestamp(date).normalize()
+    end_date = start_date + pd.Timedelta(days=1)
+
+    # Select data for the given date
+    daily_data = subset.sel(time=slice(start_date, end_date))
+
+    # Create time mask for the given display window
+    time_values = pd.to_datetime(
+        daily_data.time.values
+    )  # Convert numpy.datetime64 to datetime
+    mask = [(display_start_hour <= t.hour < display_end_hour) for t in time_values]
+
+    # Filter data within the specified hours
+    daily_data = daily_data.isel(time=mask)
+    # Select nearest points for the supplied x and y indices
+    location_data = daily_data.sel(x=x_target, y=y_target, method="nearest")
+
+    # Interpolating the data for visualization
+    new_timestamps = pd.date_range(
+        start=start_date, end=end_date, freq="h"
+    )  # Every full hour
+
+    # Remove timestamps that are outside the range of the data
+    new_timestamps = new_timestamps[
+        (new_timestamps >= location_data.time.min().values)
+        & (new_timestamps <= location_data.time.max().values)
+    ]
+
+    altitudes = np.arange(0, 3000, 200)  # Every 200 meters
+    # Remove altitude that are outside the range of the data
+    altitudes = altitudes[
+        (altitudes >= location_data.altitude.min().values)
+        & (altitudes <= location_data.altitude.max().values)
+    ]
+
+    # Interpolate thermal temperature difference for the specified times and altitudes
+    thermal_diff = (
+        location_data["thermal_temp_diff"]
+        .interp(time=new_timestamps, altitude=altitudes)
+        .T.values
+    )
+
+    # Generating time labels for the x-axis
+    times = [t.strftime("%H:%M") for t in new_timestamps]
+
+    # Creating Plotly heatmap
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=thermal_diff,
+            x=times,
+            y=altitudes,
+            colorscale="YlGn",
+            colorbar=dict(title="Thermal Temperature Difference (°C)"),
+            zmin=0,
+            zmax=8,  # Adjusted for expected data range
+            text=thermal_diff.round(1),
+            texttemplate="%{text}",
+            textfont={"size": 12},
+        )
+    )
+
+    # Add wind speed information (if needed)
+    speed = (
+        np.sqrt(location_data["x_wind_ml"] ** 2 + location_data["y_wind_ml"] ** 2)
+        .interp(time=new_timestamps, altitude=altitudes)
+        .T.values
+    )
+    # fig.add_trace(
+    #     go.Scatter(
+    #         x=times,
+    #         y=altitudes,
+    #         mode="markers",
+    #         marker=dict(
+    #             size=8,
+    #             color=speed,
+    #             colorscale="Viridis",
+    #             colorbar=dict(title="Wind Speed (m/s)"),
+    #             cmin=0,
+    #             cmax=20,  # Adjusted for expected data range
+    #         ),
+    #         hoverinfo="text",
+    #         text=[f"Speed: {s:.2f} m/s" for s in speed.flatten()],
+    #     )
+    # )
+
+    # Update layout
+    fig.update_layout(
+        title=f"Thermal Profiles for {start_date.strftime('%Y-%m-%d')}",
+        xaxis=dict(title="Time"),
+        yaxis=dict(title="Altitude (m)"),
+        xaxis_tickangle=-45,
+    )
+
+    return fig
+
+
 def show_forecast():
-    with st.spinner("Fetching data..."):
-        if "file_path" not in st.session_state:
-            st.session_state.file_path = find_latest_meps_file()
-        subset = load_data(st.session_state.file_path)
+    subset = load_data()
 
-    def date_controls():
-        start_stop_time = [
-            subset.time.min().values.astype("M8[ms]").astype("O"),
-            subset.time.max().values.astype("M8[ms]").astype("O"),
-        ]
-        now = datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
-
-        if "forecast_date" not in st.session_state:
-            st.session_state.forecast_date = (now + datetime.timedelta(days=1)).date()
-        if "forecast_time" not in st.session_state:
-            st.session_state.forecast_time = datetime.time(14, 0)
-        if "forecast_length" not in st.session_state:
-            st.session_state.forecast_length = 1
-        if "altitude_max" not in st.session_state:
-            st.session_state.altitude_max = 3000
-        if "target_latitude" not in st.session_state:
-            st.session_state.target_latitude = 61.22908
-        if "target_longitude" not in st.session_state:
-            st.session_state.target_longitude = 7.09674
-        col1, col_date, col_time, col3 = st.columns([0.2, 0.6, 0.2, 0.2])
-
-        with col1:
-            if st.button("⏮️", use_container_width=True):
-                st.session_state.forecast_date -= datetime.timedelta(days=1)
-        with col3:
-            if st.button(
-                "⏭️",
-                use_container_width=True,
-                disabled=(st.session_state.forecast_date == start_stop_time[1]),
-            ):
-                st.session_state.forecast_date += datetime.timedelta(days=1)
-        with col_date:
-            st.session_state.forecast_date = st.date_input(
-                "Start date",
-                value=st.session_state.forecast_date,
-                min_value=start_stop_time[0],
-                max_value=start_stop_time[1],
-                label_visibility="collapsed",
-                disabled=True,
-            )
-        with col_time:
-            st.session_state.forecast_time = st.time_input(
-                "Start time",
-                value=st.session_state.forecast_time,
-                step=3600,
-                disabled=False,
-                label_visibility="collapsed",
-            )
-
-    date_controls()
-    time_start = datetime.time(0, 0)
-    # convert subset.attrs['min_time']='2024-05-11T06:00:00Z' into datetime
-    min_time = datetime.datetime.strptime(
-        subset.attrs["min_time"], "%Y-%m-%dT%H:%M:%SZ"
-    )
-    date_start = datetime.datetime.combine(st.session_state.forecast_date, time_start)
-    date_start = max(date_start, min_time)
-    date_end = datetime.datetime.combine(
-        st.session_state.forecast_date
-        + datetime.timedelta(days=st.session_state.forecast_length),
-        datetime.time(0, 0),
-    )
+    date_controls(subset)
+    # time_start = datetime.time(0, 0)
+    # # convert subset.attrs['min_time']='2024-05-11T06:00:00Z' into datetime
+    # min_time = datetime.datetime.strptime(
+    #     subset.attrs["min_time"], "%Y-%m-%dT%H:%M:%SZ"
+    # )
+    # date_start = datetime.datetime.combine(st.session_state.forecast_date, time_start)
+    # date_start = max(date_start, min_time)
 
     ## MAP
     with st.expander("Map", expanded=True):
-        from streamlit_folium import st_folium
-
-        st.cache_data(ttl=30)
-
-        def build_map(date, hour):
-            m = folium.Map(
-                location=[61.22908, 7.09674], zoom_start=9, tiles="openstreetmap"
-            )
-            img_overlay, heightcolor = build_map_overlays(subset, date=date, hour=hour)
-
-            img_overlay.add_to(m)
-            m.add_child(heightcolor, name="Thermal Height (m)")
-            m.add_child(folium.LatLngPopup())
-            return m
-
-        m = build_map(
-            date=st.session_state.forecast_date, hour=st.session_state.forecast_time
+        map_fig = build_map(
+            _subset=subset,
+            date=st.session_state.forecast_date,
+            hour=st.session_state.forecast_time,
         )
-        map = st_folium(m)
-
-        def get_pos(lat, lng):
-            return lat, lng
-
-        if map["last_clicked"] is not None:
-            st.session_state.target_latitude, st.session_state.target_longitude = (
-                get_pos(map["last_clicked"]["lat"], map["last_clicked"]["lng"])
-            )
+        st.plotly_chart(map_fig, use_container_width=True, config={"scrollZoom": True})
 
     x_target, y_target = latlon_to_xy(
         st.session_state.target_latitude, st.session_state.target_longitude
     )
-    wind_fig = create_wind_map(
+    wind_fig = create_daily_thermal_and_wind_airgram(
         subset,
-        date_start=date_start,
-        date_end=date_end,
-        altitude_max=st.session_state.altitude_max,
         x_target=x_target,
         y_target=y_target,
+        date=st.session_state.forecast_date,
     )
-    st.pyplot(wind_fig)
+    # wind_fig = create_wind_map(
+    #     subset,
+    #     date_start=date_start,
+    #     date_end=date_end,
+    #     altitude_max=st.session_state.altitude_max,
+    #     x_target=x_target,
+    #     y_target=y_target,
+    # )
+    st.plotly_chart(wind_fig)
     plt.close()
 
     with st.expander("More settings", expanded=False):
-        st.session_state.forecast_length = st.number_input(
-            "multiday",
-            1,
-            3,
-            1,
-            step=1,
-        )
         st.session_state.altitude_max = st.number_input(
             "Max altitude", 0, 4000, 3000, step=500
         )
@@ -567,21 +744,6 @@ def show_forecast():
         "Wind and sounding data from MEPS model (main model used by met.no), including the estimated ground temperature. Ive probably made many errors in this process."
     )
 
-    # Download new forecast if available
-    st.session_state.file_path = find_latest_meps_file()
-    subset = load_data(st.session_state.file_path)
-
-
-@st.cache_data
-def load_data(filepath):
-    local = False
-    if local:
-        subset = xr.open_dataset("subset.nc")
-    else:
-        subset = load_meps_for_location(filepath)
-        subset.to_netcdf("subset.nc")
-    return subset
-
 
 if __name__ == "__main__":
     run_streamlit = True
@@ -592,9 +754,6 @@ if __name__ == "__main__":
         lat = 61.22908
         lon = 7.09674
         x_target, y_target = latlon_to_xy(lat, lon)
-
-        dataset_file_path = find_latest_meps_file()
-        subset = load_data(dataset_file_path)
 
         build_map_overlays(subset, date="2024-05-14", hour="16")
 
