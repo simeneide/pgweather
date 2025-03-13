@@ -626,14 +626,6 @@ def show_forecast():
     subset = load_data()
 
     date_controls(subset)
-    # time_start = datetime.time(0, 0)
-    # # convert subset.attrs['min_time']='2024-05-11T06:00:00Z' into datetime
-    # min_time = datetime.datetime.strptime(
-    #     subset.attrs["min_time"], "%Y-%m-%dT%H:%M:%SZ"
-    # )
-    # date_start = datetime.datetime.combine(st.session_state.forecast_date, time_start)
-    # date_start = max(date_start, min_time)
-
     ## MAP
     with st.expander("Map", expanded=True):
         map_fig = build_map(
