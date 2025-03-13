@@ -13,7 +13,7 @@ import os
 from utils import latlon_to_xy
 import plotly.graph_objects as go
 from matplotlib.colors import to_hex, LinearSegmentedColormap
-from streamlit_plotly_events import plotly_events
+from plotly.subplots import make_subplots
 
 
 @st.cache_data(ttl=7200)
@@ -342,31 +342,6 @@ def build_map(_subset, date=None, hour=None):
     return fig
 
 
-from plotly.subplots import make_subplots
-
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from plotly.subplots import make_subplots
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-
-
 def interpolate_color(
     wind_speed, thresholds=[2, 8, 14], colors=["white", "green", "red", "black"]
 ):
@@ -552,7 +527,7 @@ def create_daily_thermal_and_wind_airgram(subset, x_target, y_target, date):
     fig.update_layout(
         height=800,
         width=950,
-        title=f"Thermal and Wind Profiles for {start_date.strftime('%Y-%m-%d')}",
+        title=f"Airgram for {start_date.strftime('%Y-%m-%d')}, lat/lon: {st.session_state.target_latitude:.2f}, {st.session_state.target_longitude:.2f}",
         xaxis=dict(title="Time"),
         yaxis=dict(title="Altitude (m)"),
         xaxis2=dict(title="Time", tickangle=-45),
@@ -637,31 +612,6 @@ def create_daily_airgram(subset, x_target, y_target, date):
             textfont={"size": 12},
         )
     )
-
-    # Add wind speed information (if needed)
-    speed = (
-        np.sqrt(location_data["x_wind_ml"] ** 2 + location_data["y_wind_ml"] ** 2)
-        .interp(time=new_timestamps, altitude=altitudes)
-        .T.values
-    )
-    # fig.add_trace(
-    #     go.Scatter(
-    #         x=times,
-    #         y=altitudes,
-    #         mode="markers",
-    #         marker=dict(
-    #             size=8,
-    #             color=speed,
-    #             colorscale="Viridis",
-    #             colorbar=dict(title="Wind Speed (m/s)"),
-    #             cmin=0,
-    #             cmax=20,  # Adjusted for expected data range
-    #         ),
-    #         hoverinfo="text",
-    #         text=[f"Speed: {s:.2f} m/s" for s in speed.flatten()],
-    #     )
-    # )
-
     # Update layout
     fig.update_layout(
         title=f"Thermal Profiles for {start_date.strftime('%Y-%m-%d')}",
@@ -669,7 +619,6 @@ def create_daily_airgram(subset, x_target, y_target, date):
         yaxis=dict(title="Altitude (m)"),
         xaxis_tickangle=-45,
     )
-
     return fig
 
 
@@ -692,8 +641,19 @@ def show_forecast():
             date=st.session_state.forecast_date,
             hour=st.session_state.forecast_time,
         )
-        st.plotly_chart(map_fig, use_container_width=True, config={"scrollZoom": True})
-
+        map_selection = st.plotly_chart(
+            map_fig,
+            use_container_width=True,
+            config={"scrollZoom": True, "displayModeBar": False},
+            on_select="rerun",
+        )
+        # Update lat lon if selection is made
+        selected_points = map_selection.get("selection").get("points")
+        if len(selected_points) > 0:
+            point = selected_points[0]
+            st.session_state.target_latitude = point["lat"]
+            st.session_state.target_longitude = point["lon"]
+            print("Updated lat lon")
     x_target, y_target = latlon_to_xy(
         st.session_state.target_latitude, st.session_state.target_longitude
     )
