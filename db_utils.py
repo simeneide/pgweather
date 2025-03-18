@@ -4,7 +4,7 @@ import polars as pl
 import streamlit as st
 from dotenv import load_dotenv
 
-load_dotenv(".envrc")
+load_dotenv()
 import os
 
 

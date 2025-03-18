@@ -1,5 +1,3 @@
-# %%
-import xarray as xr
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -11,66 +9,41 @@ from utils import latlon_to_xy
 import plotly.graph_objects as go
 from matplotlib.colors import to_hex, LinearSegmentedColormap
 from plotly.subplots import make_subplots
+import db_utils
+import polars as pl
 
 
 @st.cache_data(ttl=7200)
 def load_data():
     """
-    Loads a NetCDF file containing forecast data. Example
-    <xarray.Dataset> Size: 483MB
-    Dimensions:               (altitude: 34, time: 67, y: 81, x: 81)
-    Coordinates:
-        height                float32 4B 0.0
-        hybrid                (altitude) float64 272B 0.6784 0.6984 ... 0.9985
-    * x                     (x) float32 324B -5.101e+05 -5.076e+05 ... -3.101e+05
-    * y                     (y) float32 324B -2.825e+05 -2.8e+05 ... -8.252e+04
-    * time                  (time) datetime64[ns] 536B 2025-03-13T12:00:00 ... ...
-        longitude             (y, x) float64 52kB 5.684 5.729 5.774 ... 8.919 8.967
-        latitude              (y, x) float64 52kB 60.43 60.43 60.43 ... 62.42 62.43
-    * altitude              (altitude) float64 272B 2.89e+03 2.684e+03 ... 11.66
-    Data variables:
-        ap                    (altitude) float64 272B 5.682e+03 5.01e+03 ... 0.0 0.0
-        b                     (altitude) float64 272B 0.6223 0.6489 ... 0.9985
-        air_temperature_ml    (time, altitude, y, x) float32 60MB 252.5 ... 260.7
-        x_wind_ml             (time, altitude, y, x) float32 60MB -1.6 ... 5.709
-        y_wind_ml             (time, altitude, y, x) float32 60MB -11.19 ... -10.67
-        surface_air_pressure  (time, y, x, altitude) float32 60MB 9.46e+04 ... 8....
-        elevation             (y, x, altitude) float32 892kB 465.8 ... 1.543e+03
-        air_temperature_0m    (time, y, x, altitude) float32 60MB 278.6 ... 261.1
-        wind_speed            (time, altitude, y, x) float32 60MB 11.31 ... 12.1
-        thermal_temp_diff     (time, y, x, altitude) float64 120MB 2.331 ... 0.3471
-        thermal_top           (time, y, x) float64 4MB 2.89e+03 ... 2.89e+03
-    Attributes: (12/41)
-        min_time:                    2025-03-13T12:00:00Z
-        geospatial_lat_min:          49.8
-        geospatial_lat_max:          75.2
-        geospatial_lon_min:          -18.1
-        geospatial_lon_max:          54.2
-        comment:                     For more information, please visit https://g...
-        ...                          ...
-        publisher_name:              Norwegian Meteorological Institute
-        summary:                     This file contains model level parameters fr...
-        summary_no:                  Denne filen inneholder modelnivåparametere f...
-        title:                       Meps 2.5Km deterministic model level paramet...
-        title_no:                    Meps 2.5Km deterministisk modellnivåparamete...
-        related_dataset:             no.met:8c94c7de-6328-4113-9e77-8f090999fab9 ...
+    Connects to the database and loads the forecast data as a Polars DataFrame.
+
+    # For dev:
+    # Save to local file
+    df_forecast.write_parquet("tmp_weather_forecasts.parquet")
+
+    # load from local file
+    df_forecast = pl.read_parquet("tmp_weather_forecasts.parquet")
     """
-    # Find all files in the forecasts directory
-    forecast_dir = "forecasts"
-    # Get a list of all NetCDF files
-    nc_files = [f for f in os.listdir(forecast_dir) if f.endswith(".nc")]
-    if not nc_files:
-        raise FileNotFoundError("No forecast files found in the 'forecasts' directory")
+    with st.spinner("Loading forecast from database...", show_time=True):
+        db = db_utils.Database()
 
-    # Sort files by their timestamp, assuming the filenames contain the timestamp
-    nc_files.sort()
+        # Read the data from the database
+        query = """
+        SELECT forecast_timestamp, time, altitude, air_temperature_ml, x_wind_ml,
+            y_wind_ml, longitude, latitude, wind_speed, thermal_temp_diff, thermal_top
+        FROM weather_forecasts
+        """
 
-    # Choose the latest file
-    latest_file = os.path.join(forecast_dir, nc_files[-1])
+        df_forecast = db.read(query)  # Using the Polars DataFrame
+        df_forecast = df_forecast.with_columns(
+            [
+                pl.col("forecast_timestamp").cast(pl.Datetime),
+                pl.col("time").cast(pl.Datetime),
+            ]
+        )
 
-    # Load the dataset from the latest file
-    subset = xr.open_dataset(latest_file)
-    return subset
+    return df_forecast
 
 
 def wind_and_temp_colorscales(wind_max=20, tempdiff_max=8):
@@ -98,42 +71,44 @@ def wind_and_temp_colorscales(wind_max=20, tempdiff_max=8):
 
 @st.cache_data(ttl=60)
 def create_wind_map(
-    _subset, x_target, y_target, altitude_max=4000, date_start=None, date_end=None
+    df_forecast, x_target, y_target, altitude_max=4000, date_start=None, date_end=None
 ):
     """
-    _subset = subset
-    altitude_max = 3000
-    x_target = -422175.14005226345
-    y_target = -204279.84596708667
-
-
+    Generates a heatmap of wind and thermals.
     """
-    subset = _subset
-
     wind_min, wind_max = 0.3, 20
     tempdiff_min, tempdiff_max = 0, 8
     wind_colors = ["grey", "blue", "green", "yellow", "red", "purple"]
 
     if date_start is None:
-        date_start = datetime.datetime.fromtimestamp(
-            subset.time.min().values.astype("int64") // 1e9
-        )
+        date_start = df_forecast.get_column("time").min().to_pandas()
     if date_end is None:
-        date_end = datetime.datetime.fromtimestamp(
-            subset.time.max().values.astype("int64") // 1e9
-        )
+        date_end = df_forecast.get_column("time").max().to_pandas()
 
-    # Resample time and altitude for the wind plot data.
+    # Create the data subset
+    subset = df_forecast.filter(
+        (pl.col("longitude") == x_target) & (pl.col("latitude") == y_target)
+    )
+
+    # Since Polars doesn't directly work with datetime ranges like xarray, use pandas
     new_timestamps = pd.date_range(date_start, date_end, 20)
-    new_altitude = np.arange(subset.elevation.mean(), altitude_max, altitude_max / 20)
+    new_altitude = np.linspace(
+        subset.get_column("altitude").mean(), altitude_max, num=20
+    )
 
-    windplot_data = subset.sel(x=x_target, y=y_target, method="nearest")
-    windplot_data = windplot_data.interp(altitude=new_altitude, time=new_timestamps)
+    # Simulate resampling, normally not directly possible in Polars
+    windplot_data = subset.to_pandas()
+    windplot_data["time"] = pd.to_datetime(windplot_data["time"])
+    windplot_data = windplot_data.set_index(["time", "altitude"]).sort_index()
+
+    windplot_data = windplot_data.interp(time=new_timestamps, method="linear").interp(
+        altitude=new_altitude, method="linear"
+    )
 
     # Convert data for Plotly heatmap
     thermal_diff = windplot_data["thermal_temp_diff"].T.values
-    times = [pd.Timestamp(time).strftime("%H:%M") for time in windplot_data.time.values]
-    altitudes = windplot_data.altitude.values
+    times = [pd.Timestamp(t).strftime("%H:%M") for t in new_timestamps]
+    altitudes = new_altitude
 
     # Creating Plotly heatmap
     fig = go.Figure(
@@ -148,7 +123,7 @@ def create_wind_map(
         )
     )
 
-    # Add wind quiver plots (Note: Plotly doesn't support quivers directly like matplotlib; consider using streamlines or other visualization methods for precise vector representation).
+    # Add wind quiver plots
     speed = np.sqrt(windplot_data["x_wind_ml"] ** 2 + windplot_data["y_wind_ml"] ** 2).T
     fig.add_trace(
         go.Scatter(
@@ -161,7 +136,6 @@ def create_wind_map(
                 colorscale=wind_colors,
                 colorbar=dict(title="Wind Speed (m/s)"),
             ),
-            # text=[f"Speed: {s:.2f} m/s" for s in speed.squeeze()],
             hoverinfo="text",
         )
     )
@@ -176,60 +150,54 @@ def create_wind_map(
     return fig
 
 
-# %%
 @st.cache_data(ttl=7200)
-def create_sounding(_subset, date, hour, x_target, y_target, altitude_max=3000):
+def create_sounding(_subset, date, hour, lon, lat, altitude_max=3000):
     """
-    date = "2024-05-12"
-    hour = "15"
-    x_target = 5
-    y_target = 5
+    Create a sounding plot using the Polars DataFrame.
     """
-    subset = _subset
     lapse_rate = 0.0098  # in degrees Celsius per meter
-    subset = subset.where(subset.altitude < altitude_max, drop=True)
+    subset = _subset.filter(pl.col("altitude") < altitude_max)
     # Create a figure object
     fig, ax = plt.subplots()
 
     # Define the dry adiabatic lapse rate
-    def add_dry_adiabatic_lines(ds):
-        # Define a range of temperatures at sea level
-        T0 = np.arange(-40, 40, 5)  # temperatures from -40°C to 40°C in steps of 10°C
+    hour = datetime.time(hour, 0, 0)
+    map_datetime = datetime.datetime.combine(date, hour)
 
-        # Create a 2D grid of temperatures and altitudes
-        T0, altitude = np.meshgrid(T0, ds.altitude)
+    df_time = subset.filter(
+        (pl.col("time") == map_datetime)
+        & (pl.col("longitude") == lon)
+        & (pl.col("latitude") == lat)
+    ).sort("altitude")
 
-        # Calculate the temperatures at each altitude
+    time_data = df_time.to_pandas()
+    altitudes = time_data["altitude"].values
+    temperatures = time_data["air_temperature_ml"].values - 273.3
+
+    def add_dry_adiabatic_lines(ax, alts, lapse_rate):
+        T0 = np.arange(-40, 40, 5)
+        T0, altitude = np.meshgrid(T0, alts)
         T_adiabatic = T0 - lapse_rate * altitude
 
-        # Plot the dry adiabatic lines
         for i in range(T0.shape[1]):
-            ax.plot(T_adiabatic[:, i], ds.altitude, "r:", alpha=0.5)
+            ax.plot(T_adiabatic[:, i], alts, "r:", alpha=0.5)
 
-    # Plot the actual temperature profiles
-    time_str = f"{date} {hour}:00:00"
-    # find x and y values cloeset to given latitude and longitude
-
-    ds_time = subset.sel(time=time_str, x=x_target, y=y_target, method="nearest")
-    T = ds_time["air_temperature_ml"].values - 273.3  # in degrees Celsius
     ax.plot(
-        T, ds_time.altitude, label=f"temp {pd.to_datetime(time_str).strftime('%H:%M')}"
+        temperatures, altitudes, label=f"temp {pd.to_datetime(date).strftime('%H:%M')}"
     )
 
-    # Define the surface temperature
-    T_surface = T[-1] + 3
-    T_parcel = T_surface - lapse_rate * ds_time.altitude
-
     # Plot the temperature of the rising air parcel
-    filter = T_parcel > T
+    T_surface = temperatures[-1] + 3
+    T_parcel = T_surface - lapse_rate * altitudes
+    filter = T_parcel > temperatures
     ax.plot(
         T_parcel[filter],
-        ds_time.altitude[filter],
+        altitudes[filter],
         label="Rising air parcel",
         color="green",
     )
 
-    add_dry_adiabatic_lines(ds_time)
+    add_dry_adiabatic_lines(ax, altitudes, lapse_rate)
 
     ax.set_xlabel("Temperature (°C)")
     ax.set_ylabel("Altitude (m)")
@@ -237,22 +205,17 @@ def create_sounding(_subset, date, hour, x_target, y_target, altitude_max=3000):
         f"Temperature Profile and Dry Adiabatic Lapse Rate for {date} {hour}:00"
     )
     ax.legend(title="Time")
-    xmin, xmax = (
-        ds_time["air_temperature_ml"].min().values - 273.3,
-        ds_time["air_temperature_ml"].max().values - 273.3 + 3,
-    )
+    xmin, xmax = temperatures.min() - 3, temperatures.max() + 3
     ax.set_xlim(xmin, xmax)
     ax.grid(True)
 
-    # Return the figure object
     return fig
 
 
-# %%
-def date_controls(subset):
+def date_controls(df_forecast):
     start_stop_time = [
-        subset.time.min().values.astype("M8[D]").astype("O"),
-        subset.time.max().values.astype("M8[D]").astype("O"),
+        df_forecast.get_column("time").min().date(),
+        df_forecast.get_column("time").max().date(),
     ]
     now = datetime.datetime.now().replace(minute=0, second=0, microsecond=0).date()
 
@@ -302,16 +265,20 @@ def date_controls(subset):
                     st.session_state.forecast_time = datetime.time(hour, 0)
 
 
-def build_map(_subset, date=None, hour=None):
-    subset = _subset
+def build_map(df_forecast, date=None, hour=None):
+    """
+    date = datetime.datetime.now().replace(minute=0, second=0, microsecond=0).date()
+    hour = datetime.datetime.now().replace(minute=0, second=0, microsecond=0).hour
+    hour = datetime.time(hour, 0, 0)
+    """
 
-    latitude_values = subset.latitude.values.flatten()
-    longitude_values = subset.longitude.values.flatten()
-    thermal_top_values = (
-        subset.thermal_top.sel(time=f"{date}T{hour}").values.flatten().round()
-    )
+    map_datetime = datetime.datetime.combine(date, hour)
+    subset = df_forecast.filter((pl.col("time") == map_datetime))
 
-    # Use Plotly's scattermap for visualization and enable click events
+    latitude_values = subset.get_column("latitude").to_numpy()
+    longitude_values = subset.get_column("longitude").to_numpy()
+    thermal_top_values = subset.get_column("thermal_top").to_numpy().round()
+
     scatter_map = go.Scattermap(
         lat=latitude_values,
         lon=longitude_values,
@@ -333,8 +300,6 @@ def build_map(_subset, date=None, hour=None):
         map=dict(center=dict(lat=61.22908, lon=7.09674), zoom=9),
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
     )
-
-    # Register click event callback
 
     return fig
 
@@ -359,82 +324,66 @@ def interpolate_color(
     return to_hex(cmap(np.clip(norm_wind_speed, 0, 1)))
 
 
-def create_daily_thermal_and_wind_airgram(subset, x_target, y_target, date):
+def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
     """
     Create a Plotly subplot figure for a single day's thermal and wind data.
     The top subplot shows wind data as arrows for direction and color for strength.
     The bottom subplot shows thermal temperature differences.
+
+    lat = df_forecast["latitude"].median()
+    lon = df_forecast["longitude"].median()
+    date = df_forecast["time"].median().date()
+
     """
-    # Define the time window to display
     display_start_hour = 7
     display_end_hour = 21
-
-    # Extract the day that matches the provided date
-    start_date = pd.Timestamp(date).normalize()
-    end_date = start_date + pd.Timedelta(days=1)
-
-    # Select data for the given date
-    daily_data = subset.sel(time=slice(start_date, end_date))
-
-    # Create time mask for the given display window
-    time_values = pd.to_datetime(
-        daily_data.time.values
-    )  # Convert numpy.datetime64 to datetime
-
-    mask = [(display_start_hour <= t.hour < display_end_hour) for t in time_values]
-
-    # Filter data within the specified hours
-    daily_data = daily_data.isel(time=mask)
-
-    # Select nearest points for the supplied x and y indices
-    location_data = daily_data.sel(x=x_target, y=y_target, method="nearest")
-
-    # Interpolating the data for visualization
-    new_timestamps = pd.date_range(
-        start=start_date, end=end_date, freq="h"
-    )  # Every full hour
-
-    # Remove timestamps that are outside the range of the data
-    new_timestamps = new_timestamps[
-        (new_timestamps >= location_data.time.min().values)
-        & (new_timestamps <= location_data.time.max().values)
-    ]
-
-    altitudes_thermal = np.arange(0, 3000, 200)  # Every 200 meters
-    altitudes_thermal = altitudes_thermal[
-        (altitudes_thermal >= location_data.altitude.min().values)
-        & (altitudes_thermal <= location_data.altitude.max().values)
-    ]
-
-    # Interpolate thermal temperature difference for the specified times and altitudes
-    thermal_diff = (
-        location_data["thermal_temp_diff"]
-        .interp(time=new_timestamps, altitude=altitudes_thermal)
-        .T.values
+    prec = 1e-2  # location precision
+    location_data = (
+        df_forecast.filter(
+            # Ensure correct date
+            (pl.col("time").dt.date() == date)
+            # Ensure correct hours
+            & (
+                pl.col("time")
+                .dt.hour()
+                .is_between(display_start_hour, display_end_hour)
+            )
+        )
+        # Ensure correct location
+        .filter(
+            (pl.col("longitude").is_between(lon - prec, lon + prec))
+            & (pl.col("latitude").is_between(lat - prec, lat + prec))
+        )
     )
 
-    # Generating time labels for the x-axis
-    times = [t.strftime("%H:%M") for t in new_timestamps]
-
-    # Calculate wind data at 500m intervals
-    altitudes_wind = np.arange(0, 3000, 500)
-    altitudes_wind = altitudes_wind[
-        (altitudes_wind >= location_data.altitude.min().values)
-        & (altitudes_wind <= location_data.altitude.max().values)
-    ]
-
-    x_wind = location_data["x_wind_ml"].interp(
-        time=new_timestamps, altitude=altitudes_wind
+    # Create an empty polar frame with houry spaced timestamps and altitude spaced altitudes
+    # Interpolate the data to this frame
+    new_timestamps = location_data.select("time").to_series().unique().to_list()
+    altitudes = np.arange(0.0, 3000.0, 200)
+    output_frame = (
+        pl.DataFrame(
+            {
+                "time": [new_timestamps],
+                "altitude": [altitudes],
+                "lat": lat,
+                "lon": lon,
+            }
+        )
+        .explode("time")
+        .explode("altitude")
+        .sort("altitude")
     )
-    y_wind = location_data["y_wind_ml"].interp(
-        time=new_timestamps, altitude=altitudes_wind
+
+    # Interpolate the data to this frame
+
+    plot_frame = (
+        output_frame.join_asof(
+            location_data.sort("altitude"), on="altitude", by="time", strategy="nearest"
+        )
+        .with_columns(wind_direction=pl.arctan2("y_wind_ml", "x_wind_ml").degrees())
+        .sort("time")
     )
 
-    # Calculate wind speed and direction
-    speed = np.sqrt(x_wind**2 + y_wind**2).T.values
-    angles = np.rad2deg(np.arctan2(y_wind, x_wind)).T.values  # Convert to degrees
-    angles = angles = (angles + 90) % 360
-    # Create a subplot figure with shared x-axis
     fig = make_subplots(
         rows=2,
         cols=1,
@@ -443,36 +392,38 @@ def create_daily_thermal_and_wind_airgram(subset, x_target, y_target, date):
         vertical_spacing=0.05,
         subplot_titles=("Wind Speed and Direction", "Thermal Temperature Difference"),
     )
-
-    # Add wind data plot as rotated triangular markers with a common legend
-    for i, alt in enumerate(altitudes_wind):
-        fig.add_trace(
-            go.Scatter(
-                x=times,
-                y=[alt] * len(times),
-                mode="markers",
-                marker=dict(
-                    symbol="arrow",
-                    size=20,
-                    angle=angles[i],
-                    color=[interpolate_color(s) for s in speed[i]],
-                    # colorscale="Viridis",
-                    showscale=False,  # Hide individual color scales
-                    cmin=0,
-                    cmax=20,
-                ),
-                hoverinfo="text",
-                text=[
-                    f"Alt: {alt} m, Speed: {spd:.1f} m/s, Direction: {angle:.1f}°"
-                    for spd, angle in zip(speed[i], angles[i])
+    fig.add_trace(
+        go.Scatter(
+            x=plot_frame.select("time").to_numpy().squeeze(),
+            y=plot_frame.select("altitude").to_numpy().squeeze(),
+            mode="markers",
+            marker=dict(
+                symbol="arrow",
+                size=20,
+                angle=plot_frame.select("wind_direction").to_numpy().squeeze(),
+                color=[
+                    interpolate_color(s)
+                    for s in plot_frame.select("wind_speed").to_numpy().squeeze()
                 ],
+                showscale=False,
+                cmin=0,
+                cmax=20,
             ),
-            row=1,
-            col=1,
-        )
-        fig.update_layout(showlegend=False)
+            hoverinfo="text",
+            text=[
+                f"Alt: {alt} m, Speed: {spd:.1f} m/s, Direction: {angle:.1f}°"
+                for alt, spd, angle in zip(
+                    plot_frame.select("altitude").to_numpy().squeeze(),
+                    plot_frame.select("wind_speed").to_numpy().squeeze(),
+                    plot_frame.select("wind_direction").to_numpy().squeeze(),
+                )
+            ],
+        ),
+        row=1,
+        col=1,
+    )
+    fig.update_layout(showlegend=False)
 
-    # Add a legend indicator for the wind speed at the right of the plots
     fig.add_shape(
         type="rect",
         x0=1.05,
@@ -498,21 +449,20 @@ def create_daily_thermal_and_wind_airgram(subset, x_target, y_target, date):
     ]
     fig.update_layout(annotations=annotations)
 
-    # Add thermal data plot
     fig.add_trace(
         go.Heatmap(
-            z=thermal_diff,
-            x=times,
-            y=altitudes_thermal,
+            z=plot_frame.select("thermal_temp_diff").to_numpy().squeeze(),
+            x=plot_frame.select("time").to_numpy().squeeze(),
+            y=plot_frame.select("altitude").to_numpy().squeeze(),
             colorscale="YlGn",
             colorbar=dict(
                 title="Thermal Temp Difference (°C)",
                 thickness=10,
-                ypad=75,  # Moves the color bar vertically
+                ypad=75,
             ),
             zmin=0,
             zmax=8,
-            text=thermal_diff.round(1),
+            text=plot_frame.select("thermal_temp_diff").to_numpy().squeeze().round(1),
             texttemplate="%{text}",
             textfont={"size": 12},
         ),
@@ -520,11 +470,10 @@ def create_daily_thermal_and_wind_airgram(subset, x_target, y_target, date):
         col=1,
     )
 
-    # Update layout
     fig.update_layout(
         height=800,
         width=950,
-        title=f"Airgram for {start_date.strftime('%Y-%m-%d')}, lat/lon: {st.session_state.target_latitude:.2f}, {st.session_state.target_longitude:.2f}",
+        title=f"Airgram for {date.strftime('%Y-%m-%d')}, lat/lon: {st.session_state.target_latitude:.2f}, {st.session_state.target_longitude:.2f}",
         xaxis=dict(title="Time"),
         yaxis=dict(title="Altitude (m)"),
         xaxis2=dict(title="Time", tickangle=-45),
@@ -534,99 +483,14 @@ def create_daily_thermal_and_wind_airgram(subset, x_target, y_target, date):
     return fig
 
 
-def create_daily_airgram(subset, x_target, y_target, date):
-    """
-    Create a Plotly heatmap for a single day's wind and thermal data.
-
-    :param subset: xarray Dataset containing the weather data.
-    :param x_target: The x-coordinate index (not longitude) of the target location.
-    :param y_target: The y-coordinate index (not latitude) of the target location.
-    :param date: The specific date for which the data is visualized (datetime object).
-    :return: A Plotly figure object.
-    """
-    # Define the time window to display
-    display_start_hour = 7
-    display_end_hour = 21
-
-    # Extract the day that matches the provided date
-    start_date = pd.Timestamp(date).normalize()
-    end_date = start_date + pd.Timedelta(days=1)
-
-    # Select data for the given date
-    daily_data = subset.sel(time=slice(start_date, end_date))
-
-    # Create time mask for the given display window
-    time_values = pd.to_datetime(
-        daily_data.time.values
-    )  # Convert numpy.datetime64 to datetime
-    mask = [(display_start_hour <= t.hour < display_end_hour) for t in time_values]
-
-    # Filter data within the specified hours
-    daily_data = daily_data.isel(time=mask)
-    # Select nearest points for the supplied x and y indices
-    location_data = daily_data.sel(x=x_target, y=y_target, method="nearest")
-
-    # Interpolating the data for visualization
-    new_timestamps = pd.date_range(
-        start=start_date, end=end_date, freq="h"
-    )  # Every full hour
-
-    # Remove timestamps that are outside the range of the data
-    new_timestamps = new_timestamps[
-        (new_timestamps >= location_data.time.min().values)
-        & (new_timestamps <= location_data.time.max().values)
-    ]
-
-    altitudes = np.arange(0, 3000, 200)  # Every 200 meters
-    # Remove altitude that are outside the range of the data
-    altitudes = altitudes[
-        (altitudes >= location_data.altitude.min().values)
-        & (altitudes <= location_data.altitude.max().values)
-    ]
-
-    # Interpolate thermal temperature difference for the specified times and altitudes
-    thermal_diff = (
-        location_data["thermal_temp_diff"]
-        .interp(time=new_timestamps, altitude=altitudes)
-        .T.values
-    )
-
-    # Generating time labels for the x-axis
-    times = [t.strftime("%H:%M") for t in new_timestamps]
-
-    # Creating Plotly heatmap
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=thermal_diff,
-            x=times,
-            y=altitudes,
-            colorscale="YlGn",
-            colorbar=dict(title="Thermal Temperature Difference (°C)"),
-            zmin=0,
-            zmax=8,  # Adjusted for expected data range
-            text=thermal_diff.round(1),
-            texttemplate="%{text}",
-            textfont={"size": 12},
-        )
-    )
-    # Update layout
-    fig.update_layout(
-        title=f"Thermal Profiles for {start_date.strftime('%Y-%m-%d')}",
-        xaxis=dict(title="Time"),
-        yaxis=dict(title="Altitude (m)"),
-        xaxis_tickangle=-45,
-    )
-    return fig
-
-
 def show_forecast():
-    subset = load_data()
+    df_forecast = load_data()
 
-    date_controls(subset)
-    ## MAP
+    date_controls(df_forecast)
+
     with st.expander("Map", expanded=True):
         map_fig = build_map(
-            _subset=subset,
+            df_forecast,
             date=st.session_state.forecast_date,
             hour=st.session_state.forecast_time,
         )
@@ -639,27 +503,18 @@ def show_forecast():
         # Update lat lon if selection is made
         selected_points = map_selection.get("selection").get("points")
         if len(selected_points) > 0:
+            print(selected_points)
             point = selected_points[0]
             st.session_state.target_latitude = point["lat"]
             st.session_state.target_longitude = point["lon"]
             print("Updated lat lon")
-    x_target, y_target = latlon_to_xy(
-        st.session_state.target_latitude, st.session_state.target_longitude
-    )
+
     wind_fig = create_daily_thermal_and_wind_airgram(
-        subset,
-        x_target=x_target,
-        y_target=y_target,
+        df_forecast,
+        lat=st.session_state.target_latitude,
+        lon=st.session_state.target_longitude,
         date=st.session_state.forecast_date,
     )
-    # wind_fig = create_wind_map(
-    #     subset,
-    #     date_start=date_start,
-    #     date_end=date_end,
-    #     altitude_max=st.session_state.altitude_max,
-    #     x_target=x_target,
-    #     y_target=y_target,
-    # )
     st.plotly_chart(wind_fig)
     plt.close()
 
@@ -668,29 +523,27 @@ def show_forecast():
             "Max altitude", 0, 4000, 3000, step=500
         )
 
-    ############################
-    ######### SOUNDING #########
-    ############################
     st.markdown("---")
     with st.expander("Sounding", expanded=False):
+        st.title("SOUNDING IS NOT FIXED YET")
         date = datetime.datetime.combine(
             st.session_state.forecast_date, st.session_state.forecast_time
         )
 
         with st.spinner("Building sounding..."):
             sounding_fig = create_sounding(
-                subset,
+                df_forecast,
                 date=date.date(),
                 hour=date.hour,
                 altitude_max=st.session_state.altitude_max,
-                x_target=x_target,
-                y_target=y_target,
+                lon=st.session_state.target_longitude,
+                lat=st.session_state.target_latitude,
             )
         st.pyplot(sounding_fig)
         plt.close()
 
     st.markdown(
-        "Wind and sounding data from MEPS model (main model used by met.no), including the estimated ground temperature. Ive probably made many errors in this process."
+        "Wind and sounding data from MEPS model (main model used by met.no), including the estimated ground temperature. I've probably made many errors in this process."
     )
 
 
@@ -699,19 +552,3 @@ if __name__ == "__main__":
     if run_streamlit:
         st.set_page_config(page_title="PGWeather", page_icon="🪂", layout="wide")
         show_forecast()
-    else:
-        lat = 61.22908
-        lon = 7.09674
-        x_target, y_target = latlon_to_xy(lat, lon)
-
-        build_map_overlays(subset, date="2024-05-14", hour="16")
-
-        wind_fig = create_wind_map(
-            subset, altitude_max=3000, x_target=x_target, y_target=y_target
-        )
-
-        # Plot thermal top on a map for a specific time
-        # subset.sel(time=subset.time.min()).thermal_top.plot()
-        sounding_fig = create_sounding(
-            subset, date="2024-05-12", hour=15, x_target=x_target, y_target=y_target
-        )
