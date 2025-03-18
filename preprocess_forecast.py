@@ -3,6 +3,7 @@ from siphon.catalog import TDSCatalog
 import numpy as np
 import datetime
 import re
+import os
 
 
 # %%
@@ -162,12 +163,41 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=3000):
     return subset
 
 
+def subsample_lat_lon(dataset, lat_stride=2, lon_stride=2):
+    """
+    Subsample the latitude and longitude points from the dataset.
+
+    Parameters:
+    - dataset: xarray.Dataset, the dataset to subsample.
+    - lat_stride: int, stride value for latitude subsampling.
+    - lon_stride: int, stride value for longitude subsampling.
+
+    Returns:
+    - xarray.Dataset, the subsampled dataset.
+    """
+    # Check if latitude and longitude dimensions are present
+    if "y" not in dataset.dims or "x" not in dataset.dims:
+        raise ValueError(
+            "Dataset does not contain 'y' and 'x' dimensions for latitude and longitude."
+        )
+
+    # Subsample latitude and longitude
+    subsampled_dataset = dataset.isel(
+        y=slice(None, None, lat_stride), x=slice(None, None, lon_stride)
+    )
+
+    return subsampled_dataset
+
+
 if __name__ == "__main__":
     dataset_file_path = find_latest_meps_file()
 
     subset = load_meps_for_location(dataset_file_path)
 
+    subsampled_subset = subsample_lat_lon(subset, lat_stride=2, lon_stride=2)
+
     os.makedirs("forecasts", exist_ok=True)
 
-    timestmap = extract_timestamp(dataset_file_path.split("/")[-1])
-    subset.to_netcdf(f"forecasts/{timestmap}.nc")
+    timestamp = extract_timestamp(dataset_file_path.split("/")[-1])
+    subsampled_subset.to_netcdf(f"forecasts/{timestamp}.nc")
+    print(f"Subsampled dataset saved to forecasts/{timestamp}.nc")
