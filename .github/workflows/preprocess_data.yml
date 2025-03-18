@@ -26,3 +26,4 @@ jobs:
               AIVEN_USER: ${{ secrets.AIVEN_USER }}
               AIVEN_PASSWORD: ${{ secrets.AIVEN_PASSWORD }}
               AIVEN_HOST: ${{ secrets.AIVEN_HOST }}
+              TRIGGER_SOURCE: ${{ github.event_name }}

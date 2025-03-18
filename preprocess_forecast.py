@@ -209,9 +209,13 @@ if __name__ == "__main__":
     last_executed_forecast_timestamp = db.read(
         f"select max(forecast_timestamp) as max_forecast_timestamp from weather_forecasts"
     )
-    if last_executed_forecast_timestamp[0, 0] >= forecast_timestamp_datetime:
+    no_new_forecast_exists = (
+        last_executed_forecast_timestamp[0, 0] >= forecast_timestamp_datetime
+    )
+
+    if no_new_forecast_exists and (os.getenv("TRIGGER_SOURCE") != "push"):
         print(
-            f"Forecast timestamp: \n {forecast_timestamp_datetime} \nLast executed forecast timestamp: \n {last_executed_forecast_timestamp[0, 0]}"
+            f"Forecast timestamp: \n {forecast_timestamp_datetime} \nLast executed forecast timestamp: \n {last_executed_forecast_timestamp[0, 0]} \n Trigger source: \n {os.getenv('TRIGGER_SOURCE')}"
         )
         print("Same or newer forecast already exists in db. Exiting.")
     else:
