@@ -485,7 +485,10 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
 
 def show_forecast():
     df_forecast = load_data()
-
+    st.title("Termikkvarsel")
+    st.markdown(
+        f"Weather forecast from met.no's MEPS model. Current forecast is generated **{df_forecast['forecast_timestamp'][0]}**"
+    )
     date_controls(df_forecast)
 
     with st.expander("Map", expanded=True):
