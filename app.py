@@ -217,18 +217,24 @@ def date_controls(df_forecast):
         df_forecast.get_column("time").min().date(),
         df_forecast.get_column("time").max().date(),
     ]
-    now = datetime.datetime.now().replace(minute=0, second=0, microsecond=0).date()
+    now = datetime.datetime.now()
+    tomorrow = now + datetime.timedelta(days=1)
+    tomorrow_date = tomorrow.date()
 
     if "forecast_date" not in st.session_state:
-        st.session_state.forecast_date = now
+        st.session_state.forecast_date = tomorrow_date
     if "forecast_time" not in st.session_state:
         st.session_state.forecast_time = datetime.time(14, 0)
     if "altitude_max" not in st.session_state:
         st.session_state.altitude_max = 3000
     if "target_latitude" not in st.session_state:
-        st.session_state.target_latitude = 61.22908
+        st.session_state.target_latitude = (
+            df_forecast.select("latitude").median().item()
+        )
     if "target_longitude" not in st.session_state:
-        st.session_state.target_longitude = 7.09674
+        st.session_state.target_longitude = (
+            df_forecast.select("longitude").median().item()
+        )
 
     # Generate available days within the dataset's time range
     available_days = pd.date_range(
@@ -242,8 +248,14 @@ def date_controls(df_forecast):
         if day == now:
             label += " (today)"
         with day_cols[i]:  # Place each button in its respective column
-            if st.button(label):
+            if st.button(
+                label,
+                type="primary"
+                if day == st.session_state.forecast_date
+                else "secondary",
+            ):
                 st.session_state.forecast_date = day
+                st.rerun()
 
     # Group hours into smaller rows for better layout
     hours_per_row = 24  # Define how many hour buttons to display per row
@@ -261,8 +273,14 @@ def date_controls(df_forecast):
         for i, hour in enumerate(batch):
             label = f"{hour:02}:00"
             with hour_cols[i]:
-                if st.button(label):
+                if st.button(
+                    label,
+                    type="primary"
+                    if hour == st.session_state.forecast_time.hour
+                    else "secondary",
+                ):
                     st.session_state.forecast_time = datetime.time(hour, 0)
+                    st.rerun()
 
 
 def build_map(df_forecast, date=None, hour=None):
@@ -297,7 +315,7 @@ def build_map(df_forecast, date=None, hour=None):
 
     fig.update_layout(
         map_style="open-street-map",
-        map=dict(center=dict(lat=61.22908, lon=7.09674), zoom=9),
+        map=dict(center=dict(lat=61.22908, lon=7.09674), zoom=8),
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
     )
 
@@ -360,6 +378,9 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
     # Interpolate the data to this frame
     new_timestamps = location_data.select("time").to_series().unique().to_list()
     altitudes = np.arange(0.0, 3000.0, 200)
+    # remove altitudes outside of the data
+    altitudes = altitudes[altitudes >= location_data["altitude"].min()]
+
     output_frame = (
         pl.DataFrame(
             {
@@ -553,5 +574,5 @@ def show_forecast():
 if __name__ == "__main__":
     run_streamlit = True
     if run_streamlit:
-        st.set_page_config(page_title="PGWeather", page_icon="🪂", layout="wide")
+        st.set_page_config(page_title="Termikkvarsel", page_icon="🪂", layout="wide")
         show_forecast()
