@@ -1,14 +1,11 @@
 # %%
 import xarray as xr
-from siphon.catalog import TDSCatalog
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import matplotlib.colors as mcolors
 import streamlit as st
 import datetime
-from scipy.interpolate import griddata
-import branca.colormap as cm
 import os
 from utils import latlon_to_xy
 import plotly.graph_objects as go
