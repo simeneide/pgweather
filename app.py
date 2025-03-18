@@ -13,6 +13,23 @@ import db_utils
 import polars as pl
 
 
+def initialize_query_params(df_forecast):
+    # Initialize latitude and longitude from query params or set defaults
+    if "lat" in st.query_params and "lon" in st.query_params:
+        st.session_state.target_latitude = float(st.query_params["lat"])
+        st.session_state.target_longitude = float(st.query_params["lon"])
+    else:
+        # Default value if not present in the query params
+        st.session_state.target_latitude = None
+        st.session_state.target_longitude = None
+
+
+# Function to update query params
+def update_query_params(lat, lon):
+    st.query_params.lat = str(lat)
+    st.query_params.lon = str(lon)
+
+
 @st.cache_data(ttl=7200)
 def load_data():
     """
@@ -510,6 +527,12 @@ def show_forecast():
     st.markdown(
         f"Weather forecast from met.no's MEPS model. Current forecast is generated **{df_forecast['forecast_timestamp'][0]}**"
     )
+
+    # Initialize query parameters on the first load
+    if "query_initialized" not in st.session_state:
+        initialize_query_params(df_forecast=df_forecast)
+        st.session_state.query_initialized = True
+
     date_controls(df_forecast)
 
     with st.expander("Map", expanded=True):
@@ -529,42 +552,53 @@ def show_forecast():
         if len(selected_points) > 0:
             print(selected_points)
             point = selected_points[0]
-            st.session_state.target_latitude = point["lat"]
-            st.session_state.target_longitude = point["lon"]
+            new_lat = point["lat"]
+            new_lon = point["lon"]
             print("Updated lat lon")
 
-    wind_fig = create_daily_thermal_and_wind_airgram(
-        df_forecast,
-        lat=st.session_state.target_latitude,
-        lon=st.session_state.target_longitude,
-        date=st.session_state.forecast_date,
-    )
-    st.plotly_chart(wind_fig)
-    plt.close()
+            if (
+                st.session_state.target_latitude != new_lat
+                or st.session_state.target_longitude != new_lon
+            ):
+                st.session_state.target_latitude = new_lat
+                st.session_state.target_longitude = new_lon
+                update_query_params(new_lat, new_lon)
+                st.rerun()  # To reflect changes in query params
+
+    if st.session_state.target_latitude is not None:
+        wind_fig = create_daily_thermal_and_wind_airgram(
+            df_forecast,
+            lat=st.session_state.target_latitude,
+            lon=st.session_state.target_longitude,
+            date=st.session_state.forecast_date,
+        )
+        st.plotly_chart(wind_fig)
+        plt.close()
 
     with st.expander("More settings", expanded=False):
         st.session_state.altitude_max = st.number_input(
             "Max altitude", 0, 4000, 3000, step=500
         )
 
-    st.markdown("---")
-    with st.expander("Sounding", expanded=False):
-        st.title("SOUNDING IS NOT FIXED YET")
-        date = datetime.datetime.combine(
-            st.session_state.forecast_date, st.session_state.forecast_time
-        )
-
-        with st.spinner("Building sounding..."):
-            sounding_fig = create_sounding(
-                df_forecast,
-                date=date.date(),
-                hour=date.hour,
-                altitude_max=st.session_state.altitude_max,
-                lon=st.session_state.target_longitude,
-                lat=st.session_state.target_latitude,
+    if st.session_state.target_latitude is not None:
+        st.markdown("---")
+        with st.expander("Sounding", expanded=False):
+            st.title("SOUNDING IS NOT FIXED YET")
+            date = datetime.datetime.combine(
+                st.session_state.forecast_date, st.session_state.forecast_time
             )
-        st.pyplot(sounding_fig)
-        plt.close()
+
+            with st.spinner("Building sounding..."):
+                sounding_fig = create_sounding(
+                    df_forecast,
+                    date=date.date(),
+                    hour=date.hour,
+                    altitude_max=st.session_state.altitude_max,
+                    lon=st.session_state.target_longitude,
+                    lat=st.session_state.target_latitude,
+                )
+            st.pyplot(sounding_fig)
+            plt.close()
 
     st.markdown(
         "Wind and sounding data from MEPS model (main model used by met.no), including the estimated ground temperature. I've probably made many errors in this process."
