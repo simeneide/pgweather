@@ -247,6 +247,6 @@ if __name__ == "__main__":
         db.write(df, "weather_forecasts", if_table_exists="replace")
         print(f"saved {len(df)} rows to db.")
 
-        create_index_query = "CREATE INDEX idx_time_name ON weather_forecasts (time, longitude, latitude);"
-        res = db.execute_query(create_index_query)
+        # create_index_query = "CREATE INDEX idx_time_name ON weather_forecasts (time, longitude, latitude);"
+        # res = db.execute_query(create_index_query)
 # %%
