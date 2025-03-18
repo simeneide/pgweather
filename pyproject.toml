@@ -26,4 +26,5 @@ dependencies = [
     "xarray>=2024.7.0",
     "nbformat>=5.10.4",
     "anywidget>=0.9.15",
+    "polars>=1.24.0",
 ]
