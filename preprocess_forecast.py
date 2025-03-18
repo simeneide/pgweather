@@ -4,6 +4,11 @@ import numpy as np
 import datetime
 import re
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+import db_utils
+import polars as pl
 
 
 # %%
@@ -191,13 +196,53 @@ def subsample_lat_lon(dataset, lat_stride=2, lon_stride=2):
 
 if __name__ == "__main__":
     dataset_file_path = find_latest_meps_file()
+    forecast_timestamp_str = extract_timestamp(dataset_file_path.split("/")[-1])
 
-    subset = load_meps_for_location(dataset_file_path)
+    from dateutil import parser
 
-    subsampled_subset = subsample_lat_lon(subset, lat_stride=2, lon_stride=2)
+    forecast_timestamp_datetime = parser.isoparse(forecast_timestamp_str)
 
-    os.makedirs("forecasts", exist_ok=True)
+    # Check in db if forecast already exists
 
-    timestamp = extract_timestamp(dataset_file_path.split("/")[-1])
-    subsampled_subset.to_netcdf(f"forecasts/{timestamp}.nc")
-    print(f"Subsampled dataset saved to forecasts/{timestamp}.nc")
+    db = db_utils.Database()
+    # Find max forecast timestamp:
+    last_executed_forecast_timestamp = db.read(
+        f"select max(forecast_timestamp) as max_forecast_timestamp from weather_forecasts"
+    )
+    if last_executed_forecast_timestamp[0, 0] >= forecast_timestamp_datetime:
+        print(
+            f"Forecast timestamp: \n {forecast_timestamp_datetime} \nLast executed forecast timestamp: \n {last_executed_forecast_timestamp[0, 0]}"
+        )
+        print("Same or newer forecast already exists in db. Exiting.")
+    else:
+        subset = load_meps_for_location(dataset_file_path)
+        subsampled_subset = subsample_lat_lon(subset, lat_stride=2, lon_stride=2)
+
+        df = (
+            pl.DataFrame(subsampled_subset.to_dataframe().reset_index())
+            .with_columns(
+                forecast_timestamp=pl.lit(forecast_timestamp_str).cast(pl.Datetime)
+            )
+            .select(
+                "forecast_timestamp",
+                "time",
+                "altitude",
+                "air_temperature_ml",
+                "x_wind_ml",
+                "y_wind_ml",
+                "longitude",
+                "latitude",
+                "wind_speed",
+                "thermal_temp_diff",
+                "thermal_top",
+            )
+        )
+
+        # Save to aiven db
+        print("saving to db...")
+        db.write(df, "weather_forecasts", if_table_exists="replace")
+        print(f"saved {len(df)} rows to db.")
+
+        create_index_query = "CREATE INDEX idx_time_name ON weather_forecasts (time, longitude, latitude);"
+        res = db.execute_query(create_index_query)
+# %%

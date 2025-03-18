@@ -9,6 +9,59 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "adbc-driver-manager"
+version = "1.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6b/e9/34d91055e13c86ff8a636ed9fd90752e21075541267774bf6ebc3cce7eae/adbc_driver_manager-1.5.0.tar.gz", hash = "sha256:db3f7a0e3f7d9c4df2e117b411407f8b1e0f202d9c2516f42cdf2d44415ac0d4", size = 107714 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/d4/dc1574f810a78c08c045a97cb108a15d5c1e47885c6711775b5edce650de/adbc_driver_manager-1.5.0-cp310-cp310-macosx_10_15_x86_64.whl", hash = "sha256:872e27c35e209c60a1b151630801847642afaadbd2e45bb2a6a66834c276c210", size = 380840 },
+    { url = "https://files.pythonhosted.org/packages/50/3f/904d6324bcee5e9e51fb0e80b5c52fc062b1f2092c778101761e2aabe0b9/adbc_driver_manager-1.5.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:9260a90bb87ead7634e2ddad6aa2cc90acdf6978450609a05ed0bc15cdbc4113", size = 368033 },
+    { url = "https://files.pythonhosted.org/packages/cc/6e/a32e2982afd30edd2eb57b50e803a2daeaa9bef3c889fc867d155f6711e1/adbc_driver_manager-1.5.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:65b5abe35349ceb3cdd9d30f24e5d757511aa50f28d1944d46e2d3064e88da25", size = 2038386 },
+    { url = "https://files.pythonhosted.org/packages/55/0f/6fb1bbfb399ed6b9515f608ba1de5069d5a87d4732869c8922863338f854/adbc_driver_manager-1.5.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:917b724181112ad0e7bfbd46f951dae2fb0163884e3fc7c0149fdf571fb5f1ac", size = 2060224 },
+    { url = "https://files.pythonhosted.org/packages/f3/50/e3c7c64836860dc8ce0b1b48c415e054a3c81ee584261ff2b6f418c7402a/adbc_driver_manager-1.5.0-cp310-cp310-win_amd64.whl", hash = "sha256:339280a4314abaf1e5830a57cad1527425b7394e3ac92b3c81a01805f248ae9b", size = 535309 },
+    { url = "https://files.pythonhosted.org/packages/68/d0/ad57a4a03817719e9ee5f57878229b6e78b6d841d2a983ab5f7d42b5d2bc/adbc_driver_manager-1.5.0-cp311-cp311-macosx_10_15_x86_64.whl", hash = "sha256:9e8ae0620a136d1fcee9b10070318bf2bda8692184eecc83c8583fbf58c438c6", size = 381818 },
+    { url = "https://files.pythonhosted.org/packages/a2/6a/04286cd20fe5738d08e6b08524787d12a2c031420234903580cf6191807b/adbc_driver_manager-1.5.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:7f547e60a242daf4b9f7b7a9100573e33d86a6128f2248c7f4e958fec70d2413", size = 368715 },
+    { url = "https://files.pythonhosted.org/packages/b5/98/0846e39180107821a865079db94b34e65d9771fc6865ba82ba0763e4f96d/adbc_driver_manager-1.5.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:17f3b3538e751d23a18b8e4aaffdcca4e2de0bff69954b920cebc173d176d5d4", size = 2150181 },
+    { url = "https://files.pythonhosted.org/packages/83/c3/91089e985f3436a6cbd52fc9f015af1a8028ca0e508472646c1f4c7daaa6/adbc_driver_manager-1.5.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6c47a270711db680816378f93083a3a2153d1e3e5a82949ed4e15550a1cf46e2", size = 2164979 },
+    { url = "https://files.pythonhosted.org/packages/9f/fe/90909d17b04172aab20ef2da54fc32014219a62e184e10935df5e5a78087/adbc_driver_manager-1.5.0-cp311-cp311-win_amd64.whl", hash = "sha256:4cef37ddd48c4a3460c53701706132d255511f21dd8f7524566c2654ca16c906", size = 536664 },
+    { url = "https://files.pythonhosted.org/packages/8b/02/093ef07a88ad304b07fcfbc8bd452ade6936d03fbe3bd1f1e6636b6340df/adbc_driver_manager-1.5.0-cp312-cp312-macosx_10_15_x86_64.whl", hash = "sha256:133cd63196d16b42e5b2ba5fe7b6e014848a656f5470819a9a0c75febfa47c0a", size = 381421 },
+    { url = "https://files.pythonhosted.org/packages/78/ea/24ffd0e67af5e8b41be6016dbc6ce5493e0c5adcafa310113637617cbf4b/adbc_driver_manager-1.5.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:4bc2b183f82ab46cae347c36ca4ab52c042f7b610c7f5db2f515e22c831c185e", size = 365697 },
+    { url = "https://files.pythonhosted.org/packages/bb/ef/6bc3014ad469deadb58a2460732d045aa1d3e55cbe03be03b89f382da90c/adbc_driver_manager-1.5.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ab827d358756ca313db4351807b9f27afd938bcdbee87861f880a40e449b3216", size = 2129071 },
+    { url = "https://files.pythonhosted.org/packages/21/54/d6401e064894685a4fd07ca4b2ba094c4190b35384beedf4ece020f33a34/adbc_driver_manager-1.5.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0170739f3b1995ccd1cfa4e108e142c50d3b47a019c9aa1a251f43d497bc93d1", size = 2161129 },
+    { url = "https://files.pythonhosted.org/packages/f4/f6/ca520d1a76c8d273b17a9068de14d7fc52d69e03cc3c2aeb807c00d07d9f/adbc_driver_manager-1.5.0-cp312-cp312-win_amd64.whl", hash = "sha256:1d1ef71398bc8622ca49224a20f68bd4948e546efdfdfb043b0760dfbd30b6e2", size = 533566 },
+    { url = "https://files.pythonhosted.org/packages/51/4a/8c1303f0c6a42059390b8204cf6b9a26710b22db598ef8bee919f5f7097f/adbc_driver_manager-1.5.0-cp313-cp313-macosx_10_15_x86_64.whl", hash = "sha256:7c097a0dce36f651496e21a3e576857733a47f749de999d1a53901580d530484", size = 379609 },
+    { url = "https://files.pythonhosted.org/packages/4b/b9/227cf6905af9fc406a2632fa96c4435a3d9cc3c40ecc09a513fcbf353fe7/adbc_driver_manager-1.5.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:1efa9d8586020f785d22c3319eb14363df4e0de7a2666449af3f8c47876ecf2f", size = 363410 },
+    { url = "https://files.pythonhosted.org/packages/d2/6a/0247a28a1ca64e531d7eff0e229368439b5b86dd29fd6079449eb0380d66/adbc_driver_manager-1.5.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:7623dd5505f6f7ac4d8948a5ef816aca34ba388730b8690bbe2e7b1de8e7385c", size = 2123347 },
+    { url = "https://files.pythonhosted.org/packages/52/66/36a57bda7858b3dfc303df2f0f5be840c778f0c3ea083680e6ae9c7795ff/adbc_driver_manager-1.5.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:826a4749806d68bc0ae2a490533093f7fb18c12ae353cc136e8f40974e11246d", size = 2156234 },
+    { url = "https://files.pythonhosted.org/packages/b6/ac/1fb234f5b5c47088bf8db114b0e64b10f99d287e41e80ebe703482f4b6fc/adbc_driver_manager-1.5.0-cp313-cp313-win_amd64.whl", hash = "sha256:ce4e0b9805df82213f8130af97320a5544f7a873982104cb81a9474adaf42caf", size = 531676 },
+    { url = "https://files.pythonhosted.org/packages/76/84/bb12cc84c7e337e96acde5644cdd250eb9f97c39228aa32d45d02e8e33db/adbc_driver_manager-1.5.0-cp39-cp39-macosx_10_15_x86_64.whl", hash = "sha256:82c9aad221319d490ddf79ce841206d52fb102a2919a41a4dba5ff759bdf0e6e", size = 382176 },
+    { url = "https://files.pythonhosted.org/packages/68/63/d678bc2c3d96bfb4d120fcad6d3be4c0b05922095a0b1129a9e6835c46f7/adbc_driver_manager-1.5.0-cp39-cp39-macosx_11_0_arm64.whl", hash = "sha256:f6296f6a63fa23aecdc14ebbae8cf8491cd52c6299510b6ce0388d66bd4b3aad", size = 369132 },
+    { url = "https://files.pythonhosted.org/packages/1a/ee/2cd4a5254072d9cb6d25bf74615d5cf0c93e2cf22d2b96abf5bee5574c2b/adbc_driver_manager-1.5.0-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:f81e38e28282edc532c69608c4c4e8de4bf3c5c17d8310863b42a4ed36535958", size = 2044587 },
+    { url = "https://files.pythonhosted.org/packages/d7/7d/e24e7fedb09bce131ca5918afc0b2e35806131a3155a3a41d76ceb3ecdc9/adbc_driver_manager-1.5.0-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1dac3e7c3f4981839c6afd276bd4502252b29b87571cb8da86a902c959387dae", size = 2059148 },
+    { url = "https://files.pythonhosted.org/packages/d1/e4/870a2e1ac08eeb3ae1656c92b64dac8478bd968a8c4f7bacfeff57355a78/adbc_driver_manager-1.5.0-cp39-cp39-win_amd64.whl", hash = "sha256:81581c5301c65f18230f885dbf6ef8fd60c01787ab7ce7597b0f39f36b134ec4", size = 536826 },
+]
+
+[[package]]
+name = "adbc-driver-postgresql"
+version = "1.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "adbc-driver-manager" },
+    { name = "importlib-resources" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b5/61/7e6b9fc03fc294bcb9f18495a1f157bb6ee4f365a14d526dfc9977ecef72/adbc_driver_postgresql-1.5.0.tar.gz", hash = "sha256:3fc569ecd816838529e4778d5a5bd3678b6e35204d0b6428335e6bb3549312e8", size = 18400 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6e/c4/8f239c5047640bf15971c34b74c56d190be20c2841c11a196ea63241d360/adbc_driver_postgresql-1.5.0-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:fb359d9a735090f8267b01f455c6ac4646e6595b4c9d4acea5764e77630c86c2", size = 2683354 },
+    { url = "https://files.pythonhosted.org/packages/a4/8a/6995f1746ea4db7456699e36c973ac9ddd87f7acbda939c0ca2b01189ded/adbc_driver_postgresql-1.5.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:2f3e3a9b75c735eb79042e5f393f7b8aa699b3fe4c474b13871f85db7ad43eb3", size = 2997056 },
+    { url = "https://files.pythonhosted.org/packages/39/c9/add6659f0df14d001d2933dbbf94511ea507c6a94fd4ae09aed9ab1f1b78/adbc_driver_postgresql-1.5.0-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3dfe69557d1af24d0d6c05085f91df825f02ac837f0861528ba5c7aa79e0cf0d", size = 3190202 },
+    { url = "https://files.pythonhosted.org/packages/22/dd/5335cee201c4f3e9cc3a101f306d1a09cf5956d44de8c80850bc958b7cd0/adbc_driver_postgresql-1.5.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:39b955dc6a53e3f01875659637d875b46bd04bf1ec361524c326c6963f5bc48a", size = 2846677 },
+    { url = "https://files.pythonhosted.org/packages/cd/9d/e34bafc8e99c93fd42227ec1bb15d80f5f661beefc30e98b4e3b54ce0792/adbc_driver_postgresql-1.5.0-py3-none-win_amd64.whl", hash = "sha256:251674ada39becb6ae86949c4d0987950d18c9b9ff6a941ff7a96f6eba2e4365", size = 2702604 },
+]
+
+[[package]]
 name = "altair"
 version = "5.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -574,6 +627,17 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/43/fa/6d96a0978d19e17b68d634497769987b16c8f4cd0a7a05048bec693caa6b/decorator-5.2.1.tar.gz", hash = "sha256:65f266143752f734b0a7cc83c46f4618af75b8c5911b00ccb61d0ac9b6da0360", size = 56711 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4e/8c/f3147f5c4b73e7550fe5f9352eaa956ae838d5c51eb58e7a25b9f3e2643b/decorator-5.2.1-py3-none-any.whl", hash = "sha256:d316bb415a2d9e2d2b3abcc4084c6502fc09240e292cd76a76afc106a1c8e04a", size = 9190 },
+]
+
+[[package]]
+name = "dotenv"
+version = "0.9.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dotenv" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b2/b7/545d2c10c1fc15e48653c91efde329a790f2eecfbbf2bd16003b5db2bab0/dotenv-0.9.9-py2.py3-none-any.whl", hash = "sha256:29cf74a087b31dafdb5a446b6d7e11cbce8ed2741540e2339c69fbef92c94ce9", size = 1892 },
 ]
 
 [[package]]
@@ -1657,8 +1721,11 @@ name = "pgweather"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "adbc-driver-manager" },
+    { name = "adbc-driver-postgresql" },
     { name = "anywidget" },
     { name = "bottleneck" },
+    { name = "dotenv" },
     { name = "folium" },
     { name = "geopandas" },
     { name = "ipykernel" },
@@ -1688,8 +1755,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "adbc-driver-manager", specifier = ">=1.5.0" },
+    { name = "adbc-driver-postgresql", specifier = ">=1.5.0" },
     { name = "anywidget", specifier = ">=0.9.15" },
     { name = "bottleneck", specifier = ">=1.4.2" },
+    { name = "dotenv", specifier = ">=0.9.9" },
     { name = "folium", specifier = ">=0.19.4" },
     { name = "geopandas", specifier = ">=0.10.2" },
     { name = "ipykernel", specifier = ">=6.29.5" },
@@ -2153,6 +2223,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/66/c0/0c8b6ad9f17a802ee498c46e004a0eb49bc148f2fd230864601a86dcf6db/python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3", size = 342432 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427", size = 229892 },
+]
+
+[[package]]
+name = "python-dotenv"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bc/57/e84d88dfe0aec03b7a2d4327012c1627ab5f03652216c63d49846d7a6c58/python-dotenv-1.0.1.tar.gz", hash = "sha256:e324ee90a023d808f1959c46bcbc04446a10ced277783dc6ee09987c37ec10ca", size = 39115 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6a/3e/b68c118422ec867fa7ab88444e1274aa40681c606d59ac27de5a5588f082/python_dotenv-1.0.1-py3-none-any.whl", hash = "sha256:f7b63ef50f1b690dddf550d03497b66d609393b40b564ed0d674909a68ebf16a", size = 19863 },
 ]
 
 [[package]]

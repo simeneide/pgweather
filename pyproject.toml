@@ -27,4 +27,7 @@ dependencies = [
     "nbformat>=5.10.4",
     "anywidget>=0.9.15",
     "polars>=1.24.0",
+    "dotenv>=0.9.9",
+    "adbc-driver-manager>=1.5.0",
+    "adbc-driver-postgresql>=1.5.0",
 ]
