@@ -300,13 +300,14 @@ def date_controls(df_forecast):
                     st.rerun()
 
 
-def build_map(df_forecast, date=None, hour=None):
+def build_map(df_forecast, selected_lat=None, selected_lon=None, date=None, hour=None):
     """
     date = datetime.datetime.now().replace(minute=0, second=0, microsecond=0).date()
     hour = datetime.datetime.now().replace(minute=0, second=0, microsecond=0).hour
     hour = datetime.time(hour, 0, 0)
+    selected_lon = df_forecast.get_column("longitude").to_numpy()[0]
+    selected_lat = df_forecast.get_column("latitude").to_numpy()[0]
     """
-
     map_datetime = datetime.datetime.combine(date, hour)
     subset = df_forecast.filter((pl.col("time") == map_datetime))
 
@@ -314,12 +315,20 @@ def build_map(df_forecast, date=None, hour=None):
     longitude_values = subset.get_column("longitude").to_numpy()
     thermal_top_values = subset.get_column("thermal_top").to_numpy().round()
 
+    # Determine whether a point is selected
+    selected_points = (latitude_values == selected_lat) & (
+        longitude_values == selected_lon
+    )
+
+    # Use conditional logic to define marker properties
+    marker_size = np.where(selected_points, 20, 9)  # Larger size for selected point
+
     scatter_map = go.Scattermap(
         lat=latitude_values,
         lon=longitude_values,
         mode="markers",
         marker=go.scattermap.Marker(
-            size=9,
+            size=marker_size,
             color=thermal_top_values,
             colorscale="Viridis",
             colorbar=dict(title="Thermal Height (m)"),
@@ -538,6 +547,8 @@ def show_forecast():
     with st.expander("Map", expanded=True):
         map_fig = build_map(
             df_forecast,
+            selected_lat=st.session_state.target_latitude,  # Newly added
+            selected_lon=st.session_state.target_longitude,  # Newly added
             date=st.session_state.forecast_date,
             hour=st.session_state.forecast_time,
         )
