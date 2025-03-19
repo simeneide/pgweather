@@ -331,6 +331,7 @@ def build_map(df_forecast, selected_lat=None, selected_lon=None, date=None, hour
             size=marker_size,
             color=thermal_top_values,
             colorscale="Viridis",
+            # showscale=False,
             colorbar=dict(title="Thermal Height (m)"),
         ),
         text=[f"Thermal Height: {ht} m" for ht in thermal_top_values],
@@ -338,10 +339,9 @@ def build_map(df_forecast, selected_lat=None, selected_lon=None, date=None, hour
     )
 
     fig = go.Figure(scatter_map)
-
     fig.update_layout(
         map_style="open-street-map",
-        map=dict(center=dict(lat=61.22908, lon=7.09674), zoom=8),
+        map=dict(center=dict(lat=selected_lat, lon=selected_lon), zoom=8),
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
     )
 
@@ -502,6 +502,7 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
             x=plot_frame.select("time").to_numpy().squeeze(),
             y=plot_frame.select("altitude").to_numpy().squeeze(),
             colorscale="YlGn",
+            showscale=False,
             colorbar=dict(
                 title="Thermal Temp Difference (°C)",
                 thickness=10,
@@ -521,12 +522,12 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
         height=800,
         width=950,
         title=f"Airgram for {date.strftime('%Y-%m-%d')}, lat/lon: {st.session_state.target_latitude:.2f}, {st.session_state.target_longitude:.2f}",
-        xaxis=dict(title="Time"),
+        # xaxis=dict(title="Time"),
         yaxis=dict(title="Altitude (m)"),
         xaxis2=dict(title="Time", tickangle=-45),
-        yaxis1=dict(title="Altitude (m)", range=[0, 3000]),
+        yaxis2=dict(title="Altitude (m)", range=[0, 3000]),
     )
-
+    fig.update_layout(legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     return fig
 
 
@@ -552,6 +553,7 @@ def show_forecast():
             date=st.session_state.forecast_date,
             hour=st.session_state.forecast_time,
         )
+
         map_selection = st.plotly_chart(
             map_fig,
             use_container_width=True,
