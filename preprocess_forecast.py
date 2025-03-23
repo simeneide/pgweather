@@ -219,8 +219,15 @@ if __name__ == "__main__":
         print("Same or newer forecast already exists in db. Exiting.")
     else:
         subset = load_meps_for_location(dataset_file_path)
-        subsampled_subset = subsample_lat_lon(subset, lat_stride=2, lon_stride=2)
 
+        #%% Interpolate altitude and subsample lat lon
+        below_600_intervals = np.arange(0, 600, 100)
+        above_600_intervals = np.arange(600, subset.altitude.max() + 200, 200)
+        altitude_intervals = np.concatenate([below_600_intervals, above_600_intervals])
+        altitude_interpolated_subset = subset.interp(altitude=altitude_intervals, method="linear")
+        subsampled_subset = subsample_lat_lon(altitude_interpolated_subset, lat_stride=2, lon_stride=2)
+
+        #%% Convert to dataframe
         df = (
             pl.DataFrame(subsampled_subset.to_dataframe().reset_index())
             .with_columns(
@@ -242,11 +249,35 @@ if __name__ == "__main__":
                 "thermal_top",
             )
         )
+        #%% categorize all points into a kommunenavn
+        import geopandas as gpd
+        from shapely.geometry import Point
+        # Step 1: Read the GeoJSON file
+        # hentet fra https://github.com/robhop/fylker-og-kommuner/blob/main/Kommuner-S.geojson
+        geojson_path = 'Kommuner-S.geojson'
+        areas_gdf = gpd.read_file(geojson_path)[['geometry','name']]
+        points_forecast = gpd.GeoDataFrame(
+            df.select("longitude", "latitude").unique().to_pandas(),
+            geometry=[Point(xy) for xy in zip(unique_lat_lon['longitude'], unique_lat_lon['latitude'])]
+        )
+        points_forecast.set_crs(areas_gdf.crs, inplace=True)
+        named_lat_lon = gpd.sjoin(points_forecast, areas_gdf, how='left', predicate='within')
+        df_names = pl.DataFrame(named_lat_lon[['longitude','latitude','name']])
+
+        df_with_names = df.join(df_names, on=['longitude','latitude'], how='left')
+        
+        # Group by name, time and altitude and calculate the mean of the other columns
+        area_forecasts = df_with_names.group_by("forecast_timestamp","time","name","altitude").median()
+
+        #%%
+        # Step 2: Create a GeoDataFrame from the DataFrame
 
         # Save to aiven db
-        print("saving to db...")
+        print("Save area forecast to db..")
+        db.write(area_forecasts, "area_forecasts", if_table_exists="replace")
+        print("saving detailed forecast to db...")
         db.write(df, "weather_forecasts", if_table_exists="replace")
-        print(f"saved {len(df)} rows to db.")
+        print(f"saved {len(df_with_names)} rows to db.")
 
         # create_index_query = "CREATE INDEX idx_time_name ON weather_forecasts (time, longitude, latitude);"
         # res = db.execute_query(create_index_query)
