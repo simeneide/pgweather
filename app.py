@@ -29,13 +29,7 @@ def update_session_and_query_parameters(df_forecast, **kwargs):
     for key, default_value in default_values.items():
         if key in kwargs:
             st.session_state[key] = kwargs[key]
-        elif key in st.query_params:
-            st.session_state[key] = (
-                type(default_value)(st.query_params[key])
-                if isinstance(default_value, (int, float))
-                else default_value
-            )
-        else:
+        elif key not in st.session_state:
             st.session_state[key] = default_value
 
     # Update the streamlit query parameters from session state
