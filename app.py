@@ -13,21 +13,41 @@ import db_utils
 import polars as pl
 
 
-def initialize_query_params(df_forecast):
-    # Initialize latitude and longitude from query params or set defaults
-    if "lat" in st.query_params and "lon" in st.query_params:
-        st.session_state.target_latitude = float(st.query_params["lat"])
-        st.session_state.target_longitude = float(st.query_params["lon"])
-    else:
-        # Default value if not present in the query params
-        st.session_state.target_latitude = None
-        st.session_state.target_longitude = None
+def update_session_and_query_parameters(df_forecast, **kwargs):
+    """Update or initialize session and query parameters, allowing for overriding via kwargs."""
 
+    # Default values
+    default_values = {
+        "target_latitude": df_forecast.select("latitude").median().item(),
+        "target_longitude": df_forecast.select("longitude").median().item(),
+        "forecast_date": (datetime.datetime.now() + datetime.timedelta(days=1)).date(),
+        "forecast_time": datetime.time(14, 0),
+        "altitude_max": 3000,
+    }
 
-# Function to update query params
-def update_query_params(lat, lon):
-    st.query_params.lat = str(lat)
-    st.query_params.lon = str(lon)
+    # Initialize or update session state with query parameters, defaults, or overrides from kwargs
+    for key, default_value in default_values.items():
+        if key in kwargs:
+            st.session_state[key] = kwargs[key]
+        elif key in st.query_params:
+            st.session_state[key] = (
+                type(default_value)(st.query_params[key])
+                if isinstance(default_value, (int, float))
+                else default_value
+            )
+        else:
+            st.session_state[key] = default_value
+
+    # Update the streamlit query parameters from session state
+    st.query_params.update(
+        {
+            "lat": str(st.session_state.target_latitude),
+            "lon": str(st.session_state.target_longitude),
+            "forecast_date": st.session_state.forecast_date.isoformat(),
+            "forecast_time": st.session_state.forecast_time.strftime("%H:%M"),
+            "altitude_max": str(st.session_state.altitude_max),
+        }
+    )
 
 
 @st.cache_data(ttl=7200)
@@ -531,25 +551,22 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
     return fig
 
 
-def show_forecast():
+def main():
     df_forecast = load_data()
     st.title("Termikkvarsel")
     st.markdown(
         f"Weather forecast from met.no's MEPS model. Current forecast is generated **{df_forecast['forecast_timestamp'][0]}**"
     )
 
-    # Initialize query parameters on the first load
-    if "query_initialized" not in st.session_state:
-        initialize_query_params(df_forecast=df_forecast)
-        st.session_state.query_initialized = True
+    update_session_state(df_forecast)
 
     date_controls(df_forecast)
 
     with st.expander("Map", expanded=True):
         map_fig = build_map(
             df_forecast,
-            selected_lat=st.session_state.target_latitude,  # Newly added
-            selected_lon=st.session_state.target_longitude,  # Newly added
+            selected_lat=st.session_state.target_latitude,
+            selected_lon=st.session_state.target_longitude,
             date=st.session_state.forecast_date,
             hour=st.session_state.forecast_time,
         )
@@ -560,23 +577,14 @@ def show_forecast():
             config={"scrollZoom": True, "displayModeBar": False},
             on_select="rerun",
         )
-        # Update lat lon if selection is made
+
         selected_points = map_selection.get("selection").get("points")
         if len(selected_points) > 0:
-            print(selected_points)
             point = selected_points[0]
             new_lat = point["lat"]
             new_lon = point["lon"]
-            print("Updated lat lon")
 
-            if (
-                st.session_state.target_latitude != new_lat
-                or st.session_state.target_longitude != new_lon
-            ):
-                st.session_state.target_latitude = new_lat
-                st.session_state.target_longitude = new_lon
-                update_query_params(new_lat, new_lon)
-                st.rerun()  # To reflect changes in query params
+            update_session_and_query_parameters(df_forecast, target_latitude=new_lat, target_longitude=new_lon)
 
     if st.session_state.target_latitude is not None:
         wind_fig = create_daily_thermal_and_wind_airgram(
@@ -622,4 +630,4 @@ if __name__ == "__main__":
     run_streamlit = True
     if run_streamlit:
         st.set_page_config(page_title="Termikkvarsel", page_icon="🪂", layout="wide")
-        show_forecast()
+        main()
