@@ -66,7 +66,7 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=3000):
         file_path = find_latest_meps_file()
 
     x_range = "[220:1:400]"
-    y_range = "[350:1:600]"
+    y_range = "[350:1:550]"
     time_range = "[0:1:66]"
     hybrid_range = "[25:1:64]"
     height_range = "[0:1:0]"
@@ -225,7 +225,8 @@ if __name__ == "__main__":
         above_600_intervals = np.arange(600, subset.altitude.max() + 200, 200)
         altitude_intervals = np.concatenate([below_600_intervals, above_600_intervals])
         altitude_interpolated_subset = subset.interp(altitude=altitude_intervals, method="linear")
-        subsampled_subset = subsample_lat_lon(altitude_interpolated_subset, lat_stride=2, lon_stride=2)
+
+        subsampled_subset = subsample_lat_lon(altitude_interpolated_subset, lat_stride=3, lon_stride=3)
 
         #%% Convert to dataframe
         df = (
@@ -234,6 +235,7 @@ if __name__ == "__main__":
                 forecast_timestamp=pl.lit(forecast_timestamp_str).cast(pl.Datetime)
             )
             .filter(pl.col("elevation")<=pl.col("altitude"))
+            .with_columns(thermal_height_above_ground=pl.col("altitude")-pl.col("elevation"))
             .select(
                 "forecast_timestamp",
                 "time",
@@ -247,6 +249,7 @@ if __name__ == "__main__":
                 "wind_speed",
                 "thermal_temp_diff",
                 "thermal_top",
+                "thermal_height_above_ground"
             )
         )
         #%% categorize all points into a kommunenavn
@@ -263,9 +266,9 @@ if __name__ == "__main__":
         )
         points_forecast.set_crs(areas_gdf.crs, inplace=True)
         named_lat_lon = gpd.sjoin(points_forecast, areas_gdf, how='left', predicate='within')
-        df_names = pl.DataFrame(named_lat_lon[['longitude','latitude','name']])
+        df_names = pl.DataFrame(named_lat_lon[['longitude','latitude','name']]).drop_nulls()
 
-        df_with_names = df.join(df_names, on=['longitude','latitude'], how='left')
+        df_with_names = df.join(df_names, on=['longitude','latitude'], how='inner')
         
         # Group by name, time and altitude and calculate the mean of the other columns
         area_forecasts = df_with_names.group_by("forecast_timestamp","time","name","altitude").median()
