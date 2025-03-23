@@ -23,6 +23,7 @@ def update_session_and_query_parameters(df_forecast, **kwargs):
         "forecast_date": (datetime.datetime.now() + datetime.timedelta(days=1)).date(),
         "forecast_time": datetime.time(14, 0),
         "altitude_max": 3000,
+        "zoom": 8,  # Default zoom level
     }
 
     # Initialize or update session state with query parameters, defaults, or overrides from kwargs
@@ -40,12 +41,12 @@ def update_session_and_query_parameters(df_forecast, **kwargs):
             "forecast_date": st.session_state.forecast_date.isoformat(),
             "forecast_time": st.session_state.forecast_time.strftime("%H:%M"),
             "altitude_max": str(st.session_state.altitude_max),
+            "zoom": str(st.session_state.zoom),  # Adding zoom to query params
         }
     )
-    #st.rerun()
 
 
-@st.cache_data(ttl=7200)
+@st.cache_resource(ttl=7200)
 def load_data():
     """
     Connects to the database and loads the forecast data as a Polars DataFrame.
@@ -250,13 +251,14 @@ def build_map(df_forecast, selected_lat=None, selected_lon=None, date=None, hour
     fig = go.Figure(scatter_map)
     fig.update_layout(
         map_style="open-street-map",
-        map=dict(center=dict(lat=selected_lat, lon=selected_lon), zoom=8),
+        map=dict(center=dict(lat=selected_lat, lon=selected_lon), zoom=st.session_state.zoom),
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
     )
 
     return fig
 
 
+@st.cache_data(ttl=3600)
 def interpolate_color(
     wind_speed, thresholds=[2, 8, 14], colors=["white", "green", "red", "black"]
 ):
@@ -277,6 +279,7 @@ def interpolate_color(
     return to_hex(cmap(np.clip(norm_wind_speed, 0, 1)))
 
 
+@st.cache_data(ttl=3600)
 def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
     """
     Create a Plotly subplot figure for a single day's thermal and wind data.
@@ -348,18 +351,23 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
         vertical_spacing=0.05,
         subplot_titles=("Wind Speed and Direction", "Thermal Temperature Difference"),
     )
+
+    ## WIND PLOT
+    # Subsample plot_frame in altitude to only get every second value
+    plot_frame_wind = plot_frame.sort("time","altitude").gather_every(2)
+    print(plot_frame_wind)
     fig.add_trace(
         go.Scatter(
-            x=plot_frame.select("time").to_numpy().squeeze(),
-            y=plot_frame.select("altitude").to_numpy().squeeze(),
+            x=plot_frame_wind.select("time").to_numpy().squeeze(),
+            y=plot_frame_wind.select("altitude").to_numpy().squeeze(),
             mode="markers",
             marker=dict(
                 symbol="arrow",
                 size=20,
-                angle=plot_frame.select("wind_direction").to_numpy().squeeze(),
+                angle=plot_frame_wind.select("wind_direction").to_numpy().squeeze(),
                 color=[
                     interpolate_color(s)
-                    for s in plot_frame.select("wind_speed").to_numpy().squeeze()
+                    for s in plot_frame_wind.select("wind_speed").to_numpy().squeeze()
                 ],
                 showscale=False,
                 cmin=0,
@@ -369,9 +377,9 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
             text=[
                 f"Alt: {alt} m, Speed: {spd:.1f} m/s, Direction: {angle:.1f}°"
                 for alt, spd, angle in zip(
-                    plot_frame.select("altitude").to_numpy().squeeze(),
-                    plot_frame.select("wind_speed").to_numpy().squeeze(),
-                    plot_frame.select("wind_direction").to_numpy().squeeze(),
+                    plot_frame_wind.select("altitude").to_numpy().squeeze(),
+                    plot_frame_wind.select("wind_speed").to_numpy().squeeze(),
+                    plot_frame_wind.select("wind_direction").to_numpy().squeeze(),
                 )
             ],
         ),
@@ -490,25 +498,25 @@ def main():
             "Max altitude", 0, 4000, 3000, step=500
         )
 
-    if st.session_state.target_latitude is not None:
-        st.markdown("---")
-        with st.expander("Sounding", expanded=False):
-            st.title("SOUNDING IS NOT FIXED YET")
-            date = datetime.datetime.combine(
-                st.session_state.forecast_date, st.session_state.forecast_time
-            )
+    # if st.session_state.target_latitude is not None:
+    #     st.markdown("---")
+    #     with st.expander("Sounding", expanded=False):
+    #         st.title("SOUNDING IS NOT FIXED YET")
+    #         date = datetime.datetime.combine(
+    #             st.session_state.forecast_date, st.session_state.forecast_time
+    #         )
 
-            with st.spinner("Building sounding..."):
-                sounding_fig = create_sounding(
-                    df_forecast,
-                    date=date.date(),
-                    hour=date.hour,
-                    altitude_max=st.session_state.altitude_max,
-                    lon=st.session_state.target_longitude,
-                    lat=st.session_state.target_latitude,
-                )
-            st.pyplot(sounding_fig)
-            plt.close()
+    #         with st.spinner("Building sounding..."):
+    #             sounding_fig = create_sounding(
+    #                 df_forecast,
+    #                 date=date.date(),
+    #                 hour=date.hour,
+    #                 altitude_max=st.session_state.altitude_max,
+    #                 lon=st.session_state.target_longitude,
+    #                 lat=st.session_state.target_latitude,
+    #             )
+    #         st.pyplot(sounding_fig)
+    #         plt.close()
 
     st.markdown(
         "Wind and sounding data from MEPS model (main model used by met.no), including the estimated ground temperature. I've probably made many errors in this process."
