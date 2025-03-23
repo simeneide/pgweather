@@ -18,8 +18,8 @@ def update_session_and_query_parameters(df_forecast, **kwargs):
 
     # Default values
     default_values = {
-        "target_latitude": df_forecast.select("latitude").median().item(),
-        "target_longitude": df_forecast.select("longitude").median().item(),
+        "target_latitude": 61.24, #df_forecast.select("latitude").median().item(),
+        "target_longitude": 7.04, #df_forecast.select("longitude").median().item(),
         "forecast_date": (datetime.datetime.now() + datetime.timedelta(days=1)).date(),
         "forecast_time": datetime.time(14, 0),
         "altitude_max": 3000,
@@ -46,7 +46,7 @@ def update_session_and_query_parameters(df_forecast, **kwargs):
     )
 
 
-@st.cache_resource(ttl=7200)
+@st.cache_resource(ttl=3600)
 def load_data():
     """
     Connects to the database and loads the forecast data as a Polars DataFrame.
@@ -255,12 +255,6 @@ def build_map(df_forecast, selected_lat=None, selected_lon=None, date=None, hour
         map=dict(center=dict(lat=selected_lat, lon=selected_lon), zoom=st.session_state.zoom),
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
     )
-    fig.update_layout(legend=dict(
-        yanchor="top",
-        y=0.99,
-        xanchor="left",
-        x=0.01
-    ))
 
     return fig
 
@@ -516,7 +510,7 @@ def main():
             date=st.session_state.forecast_date,
         )
 
-        st.plotly_chart(wind_fig, config={"scrollZoom": False, "displayModeBar": False, 'staticPlot': True})
+        st.plotly_chart(wind_fig, config={"scrollZoom": False, "displayModeBar": False, 'staticPlot': False})
 
     with st.expander("More settings", expanded=False):
         st.session_state.altitude_max = st.number_input(
