@@ -286,11 +286,27 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
     The top subplot shows wind data as arrows for direction and color for strength.
     The bottom subplot shows thermal temperature differences.
 
-    lat = df_forecast["latitude"].median()
-    lon = df_forecast["longitude"].median()
-    date = df_forecast["time"].median().date()
+    lat = st.session_state.target_latitude
+    lon = st.session_state.target_longitude
+    date = st.session_state.forecast_date
 
+    # Visualize point 
+    import plotly.express as px
+    fig = px.scatter_mapbox(
+        lat=[lat],
+        lon=[lon],
+        zoom=10,  # Adjust the zoom level as needed
+        center={'lat': lat, 'lon': lon},
+        mapbox_style='open-street-map',  # Use the same map style as in the build_map function
+        height=400,
+        width=600
+    )
+    
+    fig.update_traces(marker=dict(size=10, color="red"))  # Customize marker appearance
+    fig.update_layout(title="Location Marker", margin={"r":0,"t":0,"l":0,"b":0})
+    
     """
+
     display_start_hour = 7
     display_end_hour = 21
     prec = 1e-2  # location precision
@@ -493,7 +509,7 @@ def main():
             date=st.session_state.forecast_date,
         )
 
-        st.plotly_chart(wind_fig)
+        st.plotly_chart(wind_fig, config={"scrollZoom": False, "displayModeBar": False, 'staticPlot': True})
 
     with st.expander("More settings", expanded=False):
         st.session_state.altitude_max = st.number_input(
