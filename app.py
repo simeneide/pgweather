@@ -210,6 +210,7 @@ def date_controls(df_forecast):
         st.rerun()
 
 
+@st.cache_data(ttl=1800)
 def build_map(df_forecast, selected_lat=None, selected_lon=None, date=None, hour=None):
     """
     date = datetime.datetime.now().replace(minute=0, second=0, microsecond=0).date()
@@ -254,6 +255,12 @@ def build_map(df_forecast, selected_lat=None, selected_lon=None, date=None, hour
         map=dict(center=dict(lat=selected_lat, lon=selected_lon), zoom=st.session_state.zoom),
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
     )
+    fig.update_layout(legend=dict(
+        yanchor="top",
+        y=0.99,
+        xanchor="left",
+        x=0.01
+    ))
 
     return fig
 
