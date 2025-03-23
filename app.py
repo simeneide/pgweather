@@ -339,7 +339,7 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
         output_frame.join_asof(
             location_data.sort("altitude"), on="altitude", by="time", strategy="nearest"
         )
-        .with_columns(wind_direction=-pl.arctan2("y_wind_ml", "x_wind_ml").degrees()-90)
+        .with_columns(wind_direction=-pl.arctan2("y_wind_ml", "x_wind_ml").degrees()+90)
         .sort("time")
     )
 
