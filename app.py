@@ -64,10 +64,10 @@ def load_data(forecast_type = "detailed"):
 
         # Read the data from the database
         query = f"""
-        SELECT forecast_timestamp, time, name, altitude, air_temperature_ml, x_wind_ml,
-            y_wind_ml, longitude, latitude, wind_speed, thermal_temp_diff, thermal_top, thermal_height_above_ground
+        SELECT *
         FROM {forecast_type}_forecasts
         """
+        # forecast_timestamp, time, name, altitude, air_temperature_ml, x_wind_ml, y_wind_ml, longitude, latitude, wind_speed, thermal_temp_diff, thermal_top, thermal_height_above_ground
 
         df_forecast_detailed = db.read(query)  # Using the Polars DataFrame
         df_forecast_detailed = df_forecast_detailed.with_columns(
