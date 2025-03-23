@@ -65,8 +65,8 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=3000):
     if file_path is None:
         file_path = find_latest_meps_file()
 
-    x_range = "[220:1:300]"
-    y_range = "[420:1:500]"
+    x_range = "[220:1:400]"
+    y_range = "[350:1:600]"
     time_range = "[0:1:66]"
     hybrid_range = "[25:1:64]"
     height_range = "[0:1:0]"
@@ -256,8 +256,9 @@ if __name__ == "__main__":
         # hentet fra https://github.com/robhop/fylker-og-kommuner/blob/main/Kommuner-S.geojson
         geojson_path = 'Kommuner-S.geojson'
         areas_gdf = gpd.read_file(geojson_path)[['geometry','name']]
+        unique_lat_lon = df.select("longitude", "latitude").unique().to_pandas()
         points_forecast = gpd.GeoDataFrame(
-            df.select("longitude", "latitude").unique().to_pandas(),
+            unique_lat_lon,
             geometry=[Point(xy) for xy in zip(unique_lat_lon['longitude'], unique_lat_lon['latitude'])]
         )
         points_forecast.set_crs(areas_gdf.crs, inplace=True)

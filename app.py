@@ -11,9 +11,9 @@ from matplotlib.colors import to_hex, LinearSegmentedColormap
 from plotly.subplots import make_subplots
 import db_utils
 import polars as pl
+import json
 
-
-def update_session_and_query_parameters(df_forecast, **kwargs):
+def update_session_and_query_parameters(**kwargs):
     """Update or initialize session and query parameters, allowing for overriding via kwargs."""
 
     # Default values
@@ -47,36 +47,37 @@ def update_session_and_query_parameters(df_forecast, **kwargs):
 
 
 @st.cache_resource(ttl=3600)
-def load_data():
+def load_data(forecast_type = "detailed"):
     """
     Connects to the database and loads the forecast data as a Polars DataFrame.
 
     # For dev:
     # Save to local file
-    df_forecast.write_parquet("tmp_weather_forecasts.parquet")
+    df_forecast_detailed.write_parquet("tmp_weather_forecasts.parquet")
 
     # load from local file
-    df_forecast = pl.read_parquet("tmp_weather_forecasts.parquet")
+    df_forecast_detailed = pl.read_parquet("tmp_weather_forecasts.parquet")
     """
+    assert forecast_type in ["detailed", "area"], "forecast_type must be either 'detailed' or 'area'"
     with st.spinner("Loading forecast from database...", show_time=True):
         db = db_utils.Database()
 
         # Read the data from the database
-        query = """
-        SELECT forecast_timestamp, time, altitude, air_temperature_ml, x_wind_ml,
+        query = f"""
+        SELECT forecast_timestamp, time, name, altitude, air_temperature_ml, x_wind_ml,
             y_wind_ml, longitude, latitude, wind_speed, thermal_temp_diff, thermal_top
-        FROM weather_forecasts
+        FROM {forecast_type}_forecasts
         """
 
-        df_forecast = db.read(query)  # Using the Polars DataFrame
-        df_forecast = df_forecast.with_columns(
+        df_forecast_detailed = db.read(query)  # Using the Polars DataFrame
+        df_forecast_detailed = df_forecast_detailed.with_columns(
             [
                 pl.col("forecast_timestamp").cast(pl.Datetime),
                 pl.col("time").cast(pl.Datetime),
             ]
         )
 
-    return df_forecast
+    return df_forecast_detailed
 
 
 @st.cache_resource()
@@ -100,6 +101,7 @@ def wind_and_temp_colorscales(wind_max=20, tempdiff_max=8):
     tempcolors = mcolors.LinearSegmentedColormap.from_list(
         "", list(zip(thermal_positions_norm, thermal_colors))
     )
+    
     return windcolors, tempcolors
 
 @st.cache_data(ttl=7200)
@@ -164,13 +166,13 @@ def create_sounding(_subset, date, hour, lon, lat, altitude_max=3000):
     return fig
 
 
-def date_controls(df_forecast):
+def date_controls(df_forecast_detailed):
     
     @st.cache_data(ttl=3600)
-    def get_forecast_days(df_forecast):
+    def get_forecast_days(df_forecast_detailed):
         start_stop_time = [
-            df_forecast.get_column("time").min().date(),
-            df_forecast.get_column("time").max().date(),
+            df_forecast_detailed.get_column("time").min().date(),
+            df_forecast_detailed.get_column("time").max().date(),
         ]
         now = datetime.datetime.now().date()
         # Generate available days within the dataset's time range
@@ -179,7 +181,7 @@ def date_controls(df_forecast):
         ).date
         return available_days, now
 
-    available_days, now = get_forecast_days(df_forecast)
+    available_days, now = get_forecast_days(df_forecast_detailed)
     day_cols = st.columns(len(available_days))  # Create columns for each available day
 
     for i, day in enumerate(available_days):
@@ -211,45 +213,74 @@ def date_controls(df_forecast):
 
 
 @st.cache_data(ttl=1800)
-def build_map(df_forecast, selected_lat=None, selected_lon=None, date=None, hour=None):
+def build_map(df_forecast_detailed, df_forecast_areas, selected_lat=None, selected_lon=None, date=None, hour=None, show_detailed=True):
     """
     date = datetime.datetime.now().replace(minute=0, second=0, microsecond=0).date()
     hour = datetime.datetime.now().replace(minute=0, second=0, microsecond=0).hour
     hour = datetime.time(hour, 0, 0)
-    selected_lon = df_forecast.get_column("longitude").to_numpy()[0]
-    selected_lat = df_forecast.get_column("latitude").to_numpy()[0]
+    selected_lon = df_forecast_detailed.get_column("longitude").to_numpy()[0]
+    selected_lat = df_forecast_detailed.get_column("latitude").to_numpy()[0]
     """
     map_datetime = datetime.datetime.combine(date, hour)
-    subset = df_forecast.filter((pl.col("time") == map_datetime))
+    
+    ## BUILD AREA MAP
+    with open('Kommuner-S.geojson', 'r') as file:
+        areas = json.load(file)
+    subset_area = df_forecast_areas.filter((pl.col("time") == map_datetime))
 
-    latitude_values = subset.get_column("latitude").to_numpy()
-    longitude_values = subset.get_column("longitude").to_numpy()
-    thermal_top_values = subset.get_column("thermal_top").to_numpy().round()
+    name_values = subset_area.get_column("name").to_numpy()
+    thermal_top_area_values = subset_area.get_column("thermal_top").to_numpy().round()
 
-    # Determine whether a point is selected
-    selected_points = (latitude_values == selected_lat) & (
-        longitude_values == selected_lon
-    )
+    # Define a custom colorscale
+    thermal_colorscale = [
+        (0.0, "grey"),      # Start: blue
+        (0.3, "blue"),     # Intermediate: green
+        (1.0, "red")        # End: red
+    ]
 
-    # Use conditional logic to define marker properties
-    marker_size = np.where(selected_points, 20, 9)  # Larger size for selected point
+    area_map = go.Choroplethmap(geojson=areas,
+                     featureidkey='properties.name', 
+                     locations=name_values, 
+                     z=thermal_top_area_values,
+                     colorscale=thermal_colorscale, 
+                     showscale=True,
+                     marker_opacity=0.3)
 
-    scatter_map = go.Scattermap(
-        lat=latitude_values,
-        lon=longitude_values,
-        mode="markers",
-        marker=go.scattermap.Marker(
-            size=marker_size,
-            color=thermal_top_values,
-            colorscale="Viridis",
-            # showscale=False,
-            colorbar=dict(title="Thermal Height (m)"),
-        ),
-        text=[f"Thermal Height: {ht} m" for ht in thermal_top_values],
-        hoverinfo="text",
-    )
+    fig = go.Figure(area_map)
+    ## BUILD DETAILED MAP
+    if show_detailed:
+        subset = df_forecast_detailed.filter((pl.col("time") == map_datetime))
 
-    fig = go.Figure(scatter_map)
+        latitude_values = subset.get_column("latitude").to_numpy()
+        longitude_values = subset.get_column("longitude").to_numpy()
+        thermal_top_values = subset.get_column("thermal_top").to_numpy().round()
+
+        # Determine whether a point is selected
+        selected_points = (latitude_values == selected_lat) & (
+            longitude_values == selected_lon
+        )
+
+        # Use conditional logic to define marker properties
+        marker_size = np.where(selected_points, 20, 9)  # Larger size for selected point
+        marker_opacity = np.where(selected_points, 1, 0.02)  # Full opacity for selected point
+
+        detailed_map = go.Scattermap(
+            lat=latitude_values,
+            lon=longitude_values,
+            mode="markers",
+            marker=go.scattermap.Marker(
+                size=marker_size,
+                color=thermal_top_values,
+                colorscale=thermal_colorscale,
+                opacity=marker_opacity,
+                showscale=False,
+                colorbar=dict(title="Thermal Height (m)"),
+            ),
+            text=[f"Thermal Height: {ht} m" for ht in thermal_top_values],
+            hoverinfo="text",
+        )
+        fig.add_trace(detailed_map)
+    
     fig.update_layout(
         map_style="open-street-map",
         map=dict(center=dict(lat=selected_lat, lon=selected_lon), zoom=st.session_state.zoom),
@@ -281,7 +312,7 @@ def interpolate_color(
 
 
 #@st.cache_data(ttl=3600)
-def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
+def create_daily_thermal_and_wind_airgram(df_forecast_detailed, df_forecast_areas, lat, lon, date):
     """
     Create a Plotly subplot figure for a single day's thermal and wind data.
     The top subplot shows wind data as arrows for direction and color for strength.
@@ -312,7 +343,7 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
     display_end_hour = 21
     prec = 1e-2  # location precision
     location_data = (
-        df_forecast.filter(
+        df_forecast_detailed.filter(
             # Ensure correct date
             (pl.col("time").dt.date() == date)
             # Ensure correct hours
@@ -466,19 +497,21 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
 
 
 def main():
-    df_forecast = load_data()
+    df_forecast_detailed= load_data("detailed")
+    df_forecast_areas = load_data("area")
     st.title("Termikkvarsel")
     st.markdown(
-        f"Weather forecast from met.no's MEPS model. Current forecast is generated **{df_forecast['forecast_timestamp'][0]}**"
+        f"Weather forecast from met.no's MEPS model. Current forecast is generated **{df_forecast_detailed['forecast_timestamp'][0]}**"
     )
 
-    update_session_and_query_parameters(df_forecast)
+    update_session_and_query_parameters()
 
-    date_controls(df_forecast)
+    date_controls(df_forecast_detailed)
 
     with st.expander("Map", expanded=True):
         map_fig = build_map(
-            df_forecast,
+            df_forecast_detailed,
+            df_forecast_areas,
             selected_lat=st.session_state.target_latitude,
             selected_lon=st.session_state.target_longitude,
             date=st.session_state.forecast_date,
@@ -490,7 +523,10 @@ def main():
             selected_points = st.session_state.get('map_selection').get("selection").get("points", [])
             if len(selected_points) > 0:
                 point = selected_points[0]
-                update_session_and_query_parameters(df_forecast, target_latitude=point["lat"], target_longitude=point["lon"])
+                if point.get("ct"):
+                    point['lon'] = point.get("ct")[0]
+                    point['lat'] = point.get("ct")[1]                    
+                update_session_and_query_parameters(target_latitude=point["lat"], target_longitude=point["lon"])
                 print(f"Selected point: {point['lat']}, {point['lon']}")
 
         st.plotly_chart(
@@ -503,7 +539,8 @@ def main():
 
     if st.session_state.target_latitude is not None:
         wind_fig = create_daily_thermal_and_wind_airgram(
-            df_forecast,
+            df_forecast_detailed,
+            df_forecast_areas,
             lat=st.session_state.target_latitude,
             lon=st.session_state.target_longitude,
             date=st.session_state.forecast_date,
@@ -526,7 +563,7 @@ def main():
 
     #         with st.spinner("Building sounding..."):
     #             sounding_fig = create_sounding(
-    #                 df_forecast,
+    #                 df_forecast_detailed,
     #                 date=date.date(),
     #                 hour=date.hour,
     #                 altitude_max=st.session_state.altitude_max,
