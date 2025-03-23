@@ -42,6 +42,7 @@ def update_session_and_query_parameters(df_forecast, **kwargs):
             "altitude_max": str(st.session_state.altitude_max),
         }
     )
+    #st.rerun()
 
 
 @st.cache_data(ttl=7200)
@@ -77,6 +78,7 @@ def load_data():
     return df_forecast
 
 
+@st.cache_resource()
 def wind_and_temp_colorscales(wind_max=20, tempdiff_max=8):
     # build colorscale for thermal temperature difference
     wind_colors = ["grey", "blue", "green", "yellow", "red", "purple"]
@@ -98,88 +100,6 @@ def wind_and_temp_colorscales(wind_max=20, tempdiff_max=8):
         "", list(zip(thermal_positions_norm, thermal_colors))
     )
     return windcolors, tempcolors
-
-
-@st.cache_data(ttl=60)
-def create_wind_map(
-    df_forecast, x_target, y_target, altitude_max=4000, date_start=None, date_end=None
-):
-    """
-    Generates a heatmap of wind and thermals.
-    """
-    wind_min, wind_max = 0.3, 20
-    tempdiff_min, tempdiff_max = 0, 8
-    wind_colors = ["grey", "blue", "green", "yellow", "red", "purple"]
-
-    if date_start is None:
-        date_start = df_forecast.get_column("time").min().to_pandas()
-    if date_end is None:
-        date_end = df_forecast.get_column("time").max().to_pandas()
-
-    # Create the data subset
-    subset = df_forecast.filter(
-        (pl.col("longitude") == x_target) & (pl.col("latitude") == y_target)
-    )
-
-    # Since Polars doesn't directly work with datetime ranges like xarray, use pandas
-    new_timestamps = pd.date_range(date_start, date_end, 20)
-    new_altitude = np.linspace(
-        subset.get_column("altitude").mean(), altitude_max, num=20
-    )
-
-    # Simulate resampling, normally not directly possible in Polars
-    windplot_data = subset.to_pandas()
-    windplot_data["time"] = pd.to_datetime(windplot_data["time"])
-    windplot_data = windplot_data.set_index(["time", "altitude"]).sort_index()
-
-    windplot_data = windplot_data.interp(time=new_timestamps, method="linear").interp(
-        altitude=new_altitude, method="linear"
-    )
-
-    # Convert data for Plotly heatmap
-    thermal_diff = windplot_data["thermal_temp_diff"].T.values
-    times = [pd.Timestamp(t).strftime("%H:%M") for t in new_timestamps]
-    altitudes = new_altitude
-
-    # Creating Plotly heatmap
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=thermal_diff,
-            x=times,
-            y=altitudes,
-            colorscale="YlGn",
-            colorbar=dict(title="Thermal Temperature Difference (°C)"),
-            zmin=tempdiff_min,
-            zmax=tempdiff_max,
-        )
-    )
-
-    # Add wind quiver plots
-    speed = np.sqrt(windplot_data["x_wind_ml"] ** 2 + windplot_data["y_wind_ml"] ** 2).T
-    fig.add_trace(
-        go.Scatter(
-            x=times,
-            y=altitudes,
-            mode="markers",
-            marker=dict(
-                size=8,
-                color=speed,
-                colorscale=wind_colors,
-                colorbar=dict(title="Wind Speed (m/s)"),
-            ),
-            hoverinfo="text",
-        )
-    )
-
-    # Update layout
-    fig.update_layout(
-        title=f"Wind and Thermals Starting at {date_start.strftime('%Y-%m-%d')} (UTC)",
-        xaxis=dict(title="Time"),
-        yaxis=dict(title="Altitude (m)"),
-    )
-
-    return fig
-
 
 @st.cache_data(ttl=7200)
 def create_sounding(_subset, date, hour, lon, lat, altitude_max=3000):
@@ -244,34 +164,21 @@ def create_sounding(_subset, date, hour, lon, lat, altitude_max=3000):
 
 
 def date_controls(df_forecast):
-    start_stop_time = [
-        df_forecast.get_column("time").min().date(),
-        df_forecast.get_column("time").max().date(),
-    ]
-    now = datetime.datetime.now()
-    tomorrow = now + datetime.timedelta(days=1)
-    tomorrow_date = tomorrow.date()
+    
+    @st.cache_data(ttl=3600)
+    def get_forecast_days(df_forecast):
+        start_stop_time = [
+            df_forecast.get_column("time").min().date(),
+            df_forecast.get_column("time").max().date(),
+        ]
+        now = datetime.datetime.now().date()
+        # Generate available days within the dataset's time range
+        available_days = pd.date_range(
+            start=start_stop_time[0], end=start_stop_time[1]
+        ).date
+        return available_days, now
 
-    if "forecast_date" not in st.session_state:
-        st.session_state.forecast_date = tomorrow_date
-    if "forecast_time" not in st.session_state:
-        st.session_state.forecast_time = datetime.time(14, 0)
-    if "altitude_max" not in st.session_state:
-        st.session_state.altitude_max = 3000
-    if "target_latitude" not in st.session_state:
-        st.session_state.target_latitude = (
-            df_forecast.select("latitude").median().item()
-        )
-    if "target_longitude" not in st.session_state:
-        st.session_state.target_longitude = (
-            df_forecast.select("longitude").median().item()
-        )
-
-    # Generate available days within the dataset's time range
-    available_days = pd.date_range(
-        start=start_stop_time[0], end=start_stop_time[1]
-    ).date
-
+    available_days, now = get_forecast_days(df_forecast)
     day_cols = st.columns(len(available_days))  # Create columns for each available day
 
     for i, day in enumerate(available_days):
@@ -288,30 +195,18 @@ def date_controls(df_forecast):
                 st.session_state.forecast_date = day
                 st.rerun()
 
-    # Group hours into smaller rows for better layout
-    hours_per_row = 24  # Define how many hour buttons to display per row
-    available_hours = range(7, 22, 1)  # 24-hour format
+    selected_hour = st.slider(
+        "Select Hour",
+        min_value=0,
+        max_value=23,
+        value=st.session_state.forecast_time.hour,
+        format="%02d:00",
+    )
 
-    # Divide hours into batches
-    hour_batches = [
-        available_hours[i : i + hours_per_row]
-        for i in range(0, len(available_hours), hours_per_row)
-    ]
-
-    # Display hour buttons in rows
-    for batch in hour_batches:
-        hour_cols = st.columns(len(batch))
-        for i, hour in enumerate(batch):
-            label = f"{hour:02}:00"
-            with hour_cols[i]:
-                if st.button(
-                    label,
-                    type="primary"
-                    if hour == st.session_state.forecast_time.hour
-                    else "secondary",
-                ):
-                    st.session_state.forecast_time = datetime.time(hour, 0)
-                    st.rerun()
+    # Update the forecast time with the selected hour from the slider
+    if selected_hour != st.session_state.forecast_time.hour:
+        st.session_state.forecast_time = datetime.time(selected_hour, 0)
+        st.rerun()
 
 
 def build_map(df_forecast, selected_lat=None, selected_lon=None, date=None, hour=None):
