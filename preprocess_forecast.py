@@ -203,7 +203,6 @@ if __name__ == "__main__":
     forecast_timestamp_datetime = parser.isoparse(forecast_timestamp_str)
 
     # Check in db if forecast already exists
-
     db = db_utils.Database()
     # Find max forecast timestamp:
     last_executed_forecast_timestamp = db.read(
@@ -227,9 +226,11 @@ if __name__ == "__main__":
             .with_columns(
                 forecast_timestamp=pl.lit(forecast_timestamp_str).cast(pl.Datetime)
             )
+            .filter(pl.col("elevation")<=pl.col("altitude"))
             .select(
                 "forecast_timestamp",
                 "time",
+                "elevation",
                 "altitude",
                 "air_temperature_ml",
                 "x_wind_ml",
