@@ -65,7 +65,7 @@ def load_data(forecast_type = "detailed"):
         # Read the data from the database
         query = f"""
         SELECT forecast_timestamp, time, name, altitude, air_temperature_ml, x_wind_ml,
-            y_wind_ml, longitude, latitude, wind_speed, thermal_temp_diff, thermal_top
+            y_wind_ml, longitude, latitude, wind_speed, thermal_temp_diff, thermal_top, thermal_height_above_ground
         FROM {forecast_type}_forecasts
         """
 
