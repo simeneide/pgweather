@@ -233,18 +233,23 @@ def build_map(df_forecast_detailed, df_forecast_areas, selected_lat=None, select
 
     # Define a custom colorscale
     thermal_colorscale = [
-        (0.0, "grey"),      # Start: blue
-        (0.3, "blue"),     # Intermediate: green
-        (1.0, "red")        # End: red
+        (0.0, "grey"), # 0
+        (0.2, "yellow"), #1k
+        (0.4, "red"), # 2k
+        (0.6, "violet"), # 3k
+        #(0.8, "darkred"), # 4k
+        (1.0, "black") # 5k
     ]
 
     area_map = go.Choroplethmap(geojson=areas,
-                     featureidkey='properties.name', 
-                     locations=name_values, 
-                     z=thermal_top_area_values,
-                     colorscale=thermal_colorscale, 
-                     showscale=True,
-                     marker_opacity=0.3)
+                                zmin=0,
+                                zmax=5000,
+                                featureidkey='properties.name', 
+                                locations=name_values, 
+                                z=thermal_top_area_values,
+                                colorscale=thermal_colorscale, 
+                                showscale=True,
+                                marker_opacity=0.3)
 
     fig = go.Figure(area_map)
     ## BUILD DETAILED MAP
@@ -270,6 +275,8 @@ def build_map(df_forecast_detailed, df_forecast_areas, selected_lat=None, select
             mode="markers",
             marker=go.scattermap.Marker(
                 size=marker_size,
+                cmin=0,
+                cmax=5000,
                 color=thermal_top_values,
                 colorscale=thermal_colorscale,
                 opacity=marker_opacity,
