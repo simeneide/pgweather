@@ -18,12 +18,12 @@ def update_session_and_query_parameters(df_forecast, **kwargs):
 
     # Default values
     default_values = {
-        "target_latitude": 61.24, #df_forecast.select("latitude").median().item(),
-        "target_longitude": 7.04, #df_forecast.select("longitude").median().item(),
+        "target_latitude": 61.24156919323145, #df_forecast.select("latitude").median().item(),
+        "target_longitude": 7.038766068581738, #df_forecast.select("longitude").median().item(),
         "forecast_date": (datetime.datetime.now() + datetime.timedelta(days=1)).date(),
         "forecast_time": datetime.time(14, 0),
         "altitude_max": 3000,
-        "zoom": 8,  # Default zoom level
+        "zoom": 7,  # Default zoom level
     }
 
     # Initialize or update session state with query parameters, defaults, or overrides from kwargs
@@ -280,7 +280,7 @@ def interpolate_color(
     return to_hex(cmap(np.clip(norm_wind_speed, 0, 1)))
 
 
-@st.cache_data(ttl=3600)
+#@st.cache_data(ttl=3600)
 def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
     """
     Create a Plotly subplot figure for a single day's thermal and wind data.
@@ -351,7 +351,6 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
     )
 
     # Interpolate the data to this frame
-
     plot_frame = (
         output_frame.join_asof(
             location_data.sort("altitude"), on="altitude", by="time", strategy="nearest"
@@ -372,7 +371,7 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
     ## WIND PLOT
     # Subsample plot_frame in altitude to only get every second value
     plot_frame_wind = plot_frame.sort("time","altitude").gather_every(2)
-    print(plot_frame_wind)
+    #print(plot_frame_wind)
     fig.add_trace(
         go.Scatter(
             x=plot_frame_wind.select("time").to_numpy().squeeze(),
@@ -484,23 +483,22 @@ def main():
             date=st.session_state.forecast_date,
             hour=st.session_state.forecast_time,
         )
+        def a_callback():
+            print("run callback..")
+            print(st.session_state.get('map_selection'))
+            selected_points = st.session_state.get('map_selection').get("selection").get("points", [])
+            if len(selected_points) > 0:
+                point = selected_points[0]
+                update_session_and_query_parameters(df_forecast, target_latitude=point["lat"], target_longitude=point["lon"])
+                print(f"Selected point: {point['lat']}, {point['lon']}")
 
-        map_selection = st.plotly_chart(
+        st.plotly_chart(
             map_fig,
+            key = "map_selection",
             use_container_width=True,
             config={"scrollZoom": True, "displayModeBar": False},
-            on_select="rerun",
+            on_select=a_callback,
         )
-
-        selected_points = map_selection.get("selection").get("points")
-        if len(selected_points) > 0:
-            point = selected_points[0]
-            new_lat = point["lat"]
-            new_lon = point["lon"]
-
-            update_session_and_query_parameters(df_forecast, target_latitude=new_lat, target_longitude=new_lon)
-
-            st.rerun()
 
     if st.session_state.target_latitude is not None:
         wind_fig = create_daily_thermal_and_wind_airgram(
