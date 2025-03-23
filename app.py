@@ -483,6 +483,8 @@ def main():
 
             update_session_and_query_parameters(df_forecast, target_latitude=new_lat, target_longitude=new_lon)
 
+            st.rerun()
+
     if st.session_state.target_latitude is not None:
         wind_fig = create_daily_thermal_and_wind_airgram(
             df_forecast,
@@ -490,8 +492,8 @@ def main():
             lon=st.session_state.target_longitude,
             date=st.session_state.forecast_date,
         )
+
         st.plotly_chart(wind_fig)
-        plt.close()
 
     with st.expander("More settings", expanded=False):
         st.session_state.altitude_max = st.number_input(
