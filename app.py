@@ -558,7 +558,7 @@ def main():
         f"Weather forecast from met.no's MEPS model. Current forecast is generated **{df_forecast['forecast_timestamp'][0]}**"
     )
 
-    update_session_state(df_forecast)
+    update_session_and_query_parameters(df_forecast)
 
     date_controls(df_forecast)
 
