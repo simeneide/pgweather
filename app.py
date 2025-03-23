@@ -18,8 +18,8 @@ def update_session_and_query_parameters(df_forecast, **kwargs):
 
     # Default values
     default_values = {
-        "target_latitude": 61.24156919323145, #df_forecast.select("latitude").median().item(),
-        "target_longitude": 7.038766068581738, #df_forecast.select("longitude").median().item(),
+        "target_latitude": 61.24156919323145,
+        "target_longitude": 7.038766068581738,
         "forecast_date": (datetime.datetime.now() + datetime.timedelta(days=1)).date(),
         "forecast_time": datetime.time(14, 0),
         "altitude_max": 3000,
@@ -370,7 +370,8 @@ def create_daily_thermal_and_wind_airgram(df_forecast, lat, lon, date):
 
     ## WIND PLOT
     # Subsample plot_frame in altitude to only get every second value
-    plot_frame_wind = plot_frame.sort("time","altitude").gather_every(2)
+    wind_altitues = np.arange(200.0, 3000.0, 400)
+    plot_frame_wind = plot_frame.sort("time","altitude").filter(pl.col("altitude").is_in(wind_altitues))
     #print(plot_frame_wind)
     fig.add_trace(
         go.Scatter(
