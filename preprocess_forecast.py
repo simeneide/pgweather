@@ -5,11 +5,12 @@ import datetime
 import re
 import os
 from dotenv import load_dotenv
-
+import geopandas as gpd
+from shapely.geometry import Point
 load_dotenv()
 import db_utils
 import polars as pl
-
+import takeoff_utils
 
 # %%
 def compute_thermal_temp_difference(subset):
@@ -193,7 +194,6 @@ def subsample_lat_lon(dataset, lat_stride=2, lon_stride=2):
 
     return subsampled_dataset
 
-
 if __name__ == "__main__":
     dataset_file_path = find_latest_meps_file()
     forecast_timestamp_str = extract_timestamp(dataset_file_path.split("/")[-1])
@@ -226,11 +226,11 @@ if __name__ == "__main__":
         altitude_intervals = np.concatenate([below_600_intervals, above_600_intervals])
         altitude_interpolated_subset = subset.interp(altitude=altitude_intervals, method="linear")
 
-        subsampled_subset = subsample_lat_lon(altitude_interpolated_subset, lat_stride=3, lon_stride=3)
+        #subsampled_subset = subsample_lat_lon(altitude_interpolated_subset, lat_stride=3, lon_stride=3)
 
         #%% Convert to dataframe
         df = (
-            pl.DataFrame(subsampled_subset.to_dataframe().reset_index())
+            pl.DataFrame(altitude_interpolated_subset.to_dataframe().reset_index())
             .with_columns(
                 forecast_timestamp=pl.lit(forecast_timestamp_str).cast(pl.Datetime)
             )
@@ -253,13 +253,12 @@ if __name__ == "__main__":
             )
         )
         #%% categorize all points into a kommunenavn
-        import geopandas as gpd
-        from shapely.geometry import Point
         # Step 1: Read the GeoJSON file
         # hentet fra https://github.com/robhop/fylker-og-kommuner/blob/main/Kommuner-S.geojson
         geojson_path = 'Kommuner-S.geojson'
         areas_gdf = gpd.read_file(geojson_path)[['geometry','name']]
         unique_lat_lon = df.select("longitude", "latitude").unique().to_pandas()
+        
         points_forecast = gpd.GeoDataFrame(
             unique_lat_lon,
             geometry=[Point(xy) for xy in zip(unique_lat_lon['longitude'], unique_lat_lon['latitude'])]
@@ -268,20 +267,38 @@ if __name__ == "__main__":
         named_lat_lon = gpd.sjoin(points_forecast, areas_gdf, how='left', predicate='within')
         df_names = pl.DataFrame(named_lat_lon[['longitude','latitude','name']]).drop_nulls()
 
-        df_with_names = df.join(df_names, on=['longitude','latitude'], how='inner')
-        
         # Group by name, time and altitude and calculate the mean of the other columns
-        area_forecasts = df_with_names.group_by("forecast_timestamp","time","name","altitude").median()
+        area_forecasts = (
+            df
+            .join(df_names, on=['longitude','latitude'], how='inner')
+            .group_by("forecast_timestamp","time","name","altitude")
+            .median()
+        )
 
-        #%%
-        # Step 2: Create a GeoDataFrame from the DataFrame
+        # get takeoffs and find nearest forecast point
+        geojson_takeoffs = takeoff_utils.fetch_takeoffs_norway()
+        geojson_takeoffs['latitude_takeoff'] = geojson_takeoffs.geometry.y
+        geojson_takeoffs['longitude_takeoff'] = geojson_takeoffs.geometry.x
+        geojson_takeoffs.set_crs(areas_gdf.crs, inplace=True)
+        takeoffs = gpd.sjoin_nearest(geojson_takeoffs, points_forecast, how='left', max_distance=10000)[['name','longitude_takeoff','latitude_takeoff','longitude','latitude','pge_link']]
+        df_takeoffs = pl.DataFrame(takeoffs)
 
+        point_forecasts = (
+            df
+            .join(df_takeoffs, on=['longitude','latitude'], how='inner')
+            # deselect lat lon
+            .select(
+                pl.exclude("longitude","latitude")
+            )
+            .rename({'longitude_takeoff':'longitude','latitude_takeoff':'latitude'})
+        )
+        
         # Save to aiven db
         print("Save area forecast to db..")
         db.write(area_forecasts, "area_forecasts", if_table_exists="replace")
         print("saving detailed forecast to db...")
-        db.write(df_with_names, "detailed_forecasts", if_table_exists="replace")
-        print(f"saved {len(df_with_names)} rows to db.")
+        db.write(point_forecasts, "detailed_forecasts", if_table_exists="replace")
+        print(f"saved {len(point_forecasts)} point forecasts and {len(area_forecasts)} area forecasts to db.")
 
         # create_index_query = "CREATE INDEX idx_time_name ON weather_forecasts (time, longitude, latitude);"
         # res = db.execute_query(create_index_query)

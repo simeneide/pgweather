@@ -18,8 +18,8 @@ def update_session_and_query_parameters(**kwargs):
 
     # Default values
     default_values = {
-        "target_latitude": 61.24156919323145,
-        "target_longitude": 7.038766068581738,
+        "target_latitude": 61.2479,
+        "target_longitude": 7.08998,
         "forecast_date": (datetime.datetime.now() + datetime.timedelta(days=1)).date(),
         "forecast_time": datetime.time(14, 0),
         "altitude_max": 3000,
@@ -259,6 +259,7 @@ def build_map(df_forecast_detailed, df_forecast_areas, selected_lat=None, select
         latitude_values = subset.get_column("latitude").to_numpy()
         longitude_values = subset.get_column("longitude").to_numpy()
         thermal_top_values = subset.get_column("thermal_top").to_numpy().round()
+        name_values = subset.get_column("name").to_numpy()
 
         # Determine whether a point is selected
         selected_points = (latitude_values == selected_lat) & (
@@ -267,35 +268,37 @@ def build_map(df_forecast_detailed, df_forecast_areas, selected_lat=None, select
 
         # Use conditional logic to define marker properties
         marker_size = np.where(selected_points, 20, 9)  # Larger size for selected point
-        marker_opacity = np.where(selected_points, 1, 0.02)  # Full opacity for selected point
+        marker_opacity = np.where(selected_points, 1, 0.1)  # Full opacity for selected point
 
         detailed_map = go.Scattermap(
             lat=latitude_values,
             lon=longitude_values,
             mode="markers",
+            line=dict(width=2, color="grey"),
             marker=go.scattermap.Marker(
                 size=marker_size,
                 cmin=0,
                 cmax=5000,
                 color=thermal_top_values,
                 colorscale=thermal_colorscale,
-                opacity=marker_opacity,
+                opacity=1,
                 showscale=False,
                 colorbar=dict(title="Thermal Height (m)"),
+                
             ),
-            text=[f"Thermal Height: {ht} m" for ht in thermal_top_values],
+            text=[f"{name} - Thermal Height: {ht} m" for ht, name in zip(thermal_top_values, name_values)],
             hoverinfo="text",
         )
+
         fig.add_trace(detailed_map)
+
     
     fig.update_layout(
         map_style="open-street-map",
         map=dict(center=dict(lat=selected_lat, lon=selected_lon), zoom=st.session_state.zoom),
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
     )
-
     return fig
-
 
 @st.cache_data(ttl=3600)
 def interpolate_color(
@@ -493,7 +496,7 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, df_forecast_area
     fig.update_layout(
         height=800,
         width=950,
-        title=f"Airgram for {date.strftime('%Y-%m-%d')}, lat/lon: {st.session_state.target_latitude:.2f}, {st.session_state.target_longitude:.2f}",
+        title=f"Airgram for {date.strftime('%Y-%m-%d')} {plot_frame.row(0, named=True)['name']}, lat/lon: {st.session_state.target_latitude:.2f}, {st.session_state.target_longitude:.2f}",
         # xaxis=dict(title="Time"),
         yaxis=dict(title="Altitude (m)"),
         xaxis2=dict(title="Time", tickangle=-45),
