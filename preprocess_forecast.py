@@ -276,7 +276,7 @@ if __name__ == "__main__":
         print("Save area forecast to db..")
         db.write(area_forecasts, "area_forecasts", if_table_exists="replace")
         print("saving detailed forecast to db...")
-        db.write(df, "weather_forecasts", if_table_exists="replace")
+        db.write(df_with_names, "detailed_forecasts", if_table_exists="replace")
         print(f"saved {len(df_with_names)} rows to db.")
 
         # create_index_query = "CREATE INDEX idx_time_name ON weather_forecasts (time, longitude, latitude);"
