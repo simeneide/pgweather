@@ -66,8 +66,8 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=3000):
     if file_path is None:
         file_path = find_latest_meps_file()
 
-    x_range = "[220:1:400]"
-    y_range = "[350:1:550]"
+    x_range = "[220:1:350]"
+    y_range = "[350:1:500]"
     time_range = "[0:1:66]"
     hybrid_range = "[25:1:64]"
     height_range = "[0:1:0]"
@@ -226,7 +226,6 @@ if __name__ == "__main__":
         altitude_intervals = np.concatenate([below_600_intervals, above_600_intervals])
         altitude_interpolated_subset = subset.interp(altitude=altitude_intervals, method="linear")
 
-        #subsampled_subset = subsample_lat_lon(altitude_interpolated_subset, lat_stride=3, lon_stride=3)
 
         #%% Convert to dataframe
         df = (
