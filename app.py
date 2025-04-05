@@ -417,7 +417,6 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, df_forecast_area
         .with_columns(wind_direction=-pl.arctan2("y_wind_ml", "x_wind_ml").degrees()+90)
         .sort("time")
     )
-    print(plot_frame)
     fig = make_subplots(
         rows=2,
         cols=1,
@@ -461,8 +460,6 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, df_forecast_area
         row=1,
         col=1,
     )
-    # print(plot_frame_wind.select("time").to_series().to_list())
-    # print(plot_frame_wind)
     fig.update_layout(showlegend=False)
 
     fig.add_shape(
