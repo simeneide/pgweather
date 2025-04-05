@@ -285,7 +285,6 @@ def build_map(df_forecast_detailed, df_forecast_areas, selected_lat=None, select
 
         # Use conditional logic to define marker properties
         marker_size = np.where(selected_points, 20, 9)  # Larger size for selected point
-        marker_opacity = np.where(selected_points, 1, 0.1)  # Full opacity for selected point
 
         detailed_map = go.Scattermap(
             lat=latitude_values,
