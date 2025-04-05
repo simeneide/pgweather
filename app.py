@@ -318,7 +318,7 @@ def build_map(df_forecast_detailed, df_forecast_areas, selected_lat=None, select
 
 @st.cache_data(ttl=3600)
 def interpolate_color(
-    wind_speed, thresholds=[2, 8, 14], colors=["white", "green", "red", "black"]
+    wind_speed, thresholds=[2,4,5,14], colors=["grey", "green", "orange", "red", "black"]
 ):
     # Normalize thresholds to range [0, 1]
     norm_thresholds = [t / max(thresholds) for t in thresholds]
