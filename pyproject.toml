@@ -31,4 +31,5 @@ dependencies = [
     "adbc-driver-manager>=1.5.0",
     "adbc-driver-postgresql>=1.5.0",
     "geojson>=3.2.0",
+    "pytz>=2025.1",
 ]

@@ -12,6 +12,8 @@ from plotly.subplots import make_subplots
 import db_utils
 import polars as pl
 import json
+import pytz
+from zoneinfo import ZoneInfo
 
 def update_session_and_query_parameters(**kwargs):
     """Update or initialize session and query parameters, allowing for overriding via kwargs."""
@@ -20,8 +22,7 @@ def update_session_and_query_parameters(**kwargs):
     default_values = {
         "target_latitude": 61.2479,
         "target_longitude": 7.08998,
-        "forecast_date": (datetime.datetime.now() + datetime.timedelta(days=1)).date(),
-        "forecast_time": datetime.time(14, 0),
+        "selected_timestamp": datetime.datetime.now() + datetime.timedelta(hours=24),
         "altitude_max": 3000,
         "zoom": 7,  # Default zoom level
     }
@@ -38,8 +39,7 @@ def update_session_and_query_parameters(**kwargs):
         {
             "lat": str(st.session_state.target_latitude),
             "lon": str(st.session_state.target_longitude),
-            "forecast_date": st.session_state.forecast_date.isoformat(),
-            "forecast_time": st.session_state.forecast_time.strftime("%H:%M"),
+            "selected_timestamp" : st.session_state.selected_timestamp.isoformat(),
             "altitude_max": str(st.session_state.altitude_max),
             "zoom": str(st.session_state.zoom),  # Adding zoom to query params
         }
@@ -50,7 +50,9 @@ def update_session_and_query_parameters(**kwargs):
 def load_data(forecast_type = "detailed"):
     """
     Connects to the database and loads the forecast data as a Polars DataFrame.
+    forecast_type = "detailed"
 
+    
     # For dev:
     # Save to local file
     df_forecast_detailed.write_parquet("tmp_weather_forecasts.parquet")
@@ -72,8 +74,8 @@ def load_data(forecast_type = "detailed"):
         df_forecast_detailed = db.read(query)  # Using the Polars DataFrame
         df_forecast_detailed = df_forecast_detailed.with_columns(
             [
-                pl.col("forecast_timestamp").cast(pl.Datetime),
-                pl.col("time").cast(pl.Datetime),
+                pl.col("forecast_timestamp").cast(pl.Datetime).dt.replace_time_zone("UTC"),#.dt.convert_time_zone("Europe/Brussels"),
+                pl.col("time").cast(pl.Datetime).dt.replace_time_zone("UTC"),#.dt.convert_time_zone("Europe/Brussels"),
             ]
         )
 
@@ -168,52 +170,68 @@ def create_sounding(_subset, date, hour, lon, lat, altitude_max=3000):
 
 def date_controls(df_forecast_detailed):
     
-    @st.cache_data(ttl=3600)
+    #@st.cache_data(ttl=3600)
     def get_forecast_days(df_forecast_detailed):
         start_stop_time = [
-            df_forecast_detailed.get_column("time").min().date(),
-            df_forecast_detailed.get_column("time").max().date(),
+            df_forecast_detailed.get_column("time").min(),
+            df_forecast_detailed.get_column("time").max() - datetime.timedelta(hours=12)
         ]
-        now = datetime.datetime.now().date()
+        today = datetime.datetime.now().date()
+
         # Generate available days within the dataset's time range
         available_days = pd.date_range(
             start=start_stop_time[0], end=start_stop_time[1]
         ).date
-        return available_days, now
+        return available_days, today
 
-    available_days, now = get_forecast_days(df_forecast_detailed)
+    available_days, today = get_forecast_days(df_forecast_detailed)
+
     day_cols = st.columns(len(available_days))  # Create columns for each available day
 
     for i, day in enumerate(available_days):
         label = day.strftime("%A")  # Get day label
-        if day == now:
+        if day== today:
             label += " (today)"
         with day_cols[i]:  # Place each button in its respective column
             if st.button(
                 label,
                 type="primary"
-                if day == st.session_state.forecast_date
+                if day == st.session_state.selected_timestamp.date()
                 else "secondary",
             ):
-                st.session_state.forecast_date = day
+                # Update selected_timestamp
+                # Keep current selected hour
+                selected_hour = st.session_state.selected_timestamp.hour
+                st.session_state.selected_timestamp = datetime.datetime.combine(day, datetime.time(selected_hour, 0))
                 st.rerun()
+
+    cet = pytz.timezone('CET')
+    utc = pytz.timezone('UTC')
+    selected_time_cet = st.session_state.get("selected_timestamp").replace(tzinfo=utc).astimezone(cet)
 
     selected_hour = st.slider(
         "Select Hour",
         min_value=0,
         max_value=23,
-        value=st.session_state.forecast_time.hour,
+        value=selected_time_cet.hour,
         format="%02d:00",
     )
 
+    cet_time = cet.localize(datetime.datetime.combine(st.session_state.selected_timestamp.date(), datetime.time(selected_hour, 0)))
+
+    # Convert it to UTC
+    utc_time = cet_time.astimezone(utc)
+    
+
     # Update the forecast time with the selected hour from the slider
-    if selected_hour != st.session_state.forecast_time.hour:
-        st.session_state.forecast_time = datetime.time(selected_hour, 0)
+    if utc_time != st.session_state.get("selected_timestamp"):
+        st.session_state.selected_timestamp = utc_time
         st.rerun()
 
+    st.write(f"Selected time: {selected_time_cet.strftime('%Y-%m-%d %H:%M')} CET, {utc_time.strftime('%Y-%m-%d %H:%M')} UTC")
 
 @st.cache_data(ttl=1800)
-def build_map(df_forecast_detailed, df_forecast_areas, selected_lat=None, selected_lon=None, date=None, hour=None, show_detailed=True):
+def build_map(df_forecast_detailed, df_forecast_areas, selected_lat=None, selected_lon=None, selected_timestamp=None, show_detailed=True):
     """
     date = datetime.datetime.now().replace(minute=0, second=0, microsecond=0).date()
     hour = datetime.datetime.now().replace(minute=0, second=0, microsecond=0).hour
@@ -221,12 +239,11 @@ def build_map(df_forecast_detailed, df_forecast_areas, selected_lat=None, select
     selected_lon = df_forecast_detailed.get_column("longitude").to_numpy()[0]
     selected_lat = df_forecast_detailed.get_column("latitude").to_numpy()[0]
     """
-    map_datetime = datetime.datetime.combine(date, hour)
     
     ## BUILD AREA MAP
     with open('Kommuner-S.geojson', 'r') as file:
         areas = json.load(file)
-    subset_area = df_forecast_areas.filter((pl.col("time") == map_datetime))
+    subset_area = df_forecast_areas.filter((pl.col("time") == selected_timestamp))
 
     name_values = subset_area.get_column("name").to_numpy()
     thermal_top_area_values = subset_area.get_column("thermal_top").to_numpy().round()
@@ -254,7 +271,7 @@ def build_map(df_forecast_detailed, df_forecast_areas, selected_lat=None, select
     fig = go.Figure(area_map)
     ## BUILD DETAILED MAP
     if show_detailed:
-        subset = df_forecast_detailed.filter((pl.col("time") == map_datetime))
+        subset = df_forecast_detailed.filter((pl.col("time") == selected_timestamp))
 
         latitude_values = subset.get_column("latitude").to_numpy()
         longitude_values = subset.get_column("longitude").to_numpy()
@@ -330,7 +347,6 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, df_forecast_area
 
     lat = st.session_state.target_latitude
     lon = st.session_state.target_longitude
-    date = st.session_state.forecast_date
 
     # Visualize point 
     import plotly.express as px
@@ -349,15 +365,17 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, df_forecast_area
     
     """
 
-    display_start_hour = 7
+    display_start_hour = 8
     display_end_hour = 21
     prec = 1e-2  # location precision
     location_data = (
-        df_forecast_detailed.filter(
+        df_forecast_detailed
+        .with_columns(time=pl.col("time").dt.convert_time_zone("Europe/Oslo"))
+        .filter(
             # Ensure correct date
-            (pl.col("time").dt.date() == date)
+            (pl.col("time").dt.date() == date),
             # Ensure correct hours
-            & (
+            (
                 pl.col("time")
                 .dt.hour()
                 .is_between(display_start_hour, display_end_hour)
@@ -368,6 +386,7 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, df_forecast_area
             (pl.col("longitude").is_between(lon - prec, lon + prec))
             & (pl.col("latitude").is_between(lat - prec, lat + prec))
         )
+        
     )
 
     # Create an empty polar frame with houry spaced timestamps and altitude spaced altitudes
@@ -399,7 +418,7 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, df_forecast_area
         .with_columns(wind_direction=-pl.arctan2("y_wind_ml", "x_wind_ml").degrees()+90)
         .sort("time")
     )
-
+    print(plot_frame)
     fig = make_subplots(
         rows=2,
         cols=1,
@@ -413,10 +432,9 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, df_forecast_area
     # Subsample plot_frame in altitude to only get every second value
     wind_altitues = np.arange(200.0, 3000.0, 400)
     plot_frame_wind = plot_frame.sort("time","altitude").filter(pl.col("altitude").is_in(wind_altitues))
-    #print(plot_frame_wind)
     fig.add_trace(
         go.Scatter(
-            x=plot_frame_wind.select("time").to_numpy().squeeze(),
+            x=plot_frame_wind.select("time").to_series().to_list(),
             y=plot_frame_wind.select("altitude").to_numpy().squeeze(),
             mode="markers",
             marker=dict(
@@ -444,6 +462,8 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, df_forecast_area
         row=1,
         col=1,
     )
+    # print(plot_frame_wind.select("time").to_series().to_list())
+    # print(plot_frame_wind)
     fig.update_layout(showlegend=False)
 
     fig.add_shape(
@@ -474,7 +494,7 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, df_forecast_area
     fig.add_trace(
         go.Heatmap(
             z=plot_frame.select("thermal_temp_diff").to_numpy().squeeze(),
-            x=plot_frame.select("time").to_numpy().squeeze(),
+            x=plot_frame.select("time").to_series().to_list(),
             y=plot_frame.select("altitude").to_numpy().squeeze(),
             colorscale="YlGn",
             showscale=False,
@@ -524,8 +544,7 @@ def main():
             df_forecast_areas,
             selected_lat=st.session_state.target_latitude,
             selected_lon=st.session_state.target_longitude,
-            date=st.session_state.forecast_date,
-            hour=st.session_state.forecast_time,
+            selected_timestamp=st.session_state.selected_timestamp,
         )
         def a_callback():
             print("run callback..")
@@ -553,7 +572,7 @@ def main():
             df_forecast_areas,
             lat=st.session_state.target_latitude,
             lon=st.session_state.target_longitude,
-            date=st.session_state.forecast_date,
+            date=st.session_state.selected_timestamp.date(),
         )
 
         st.plotly_chart(wind_fig, config={"scrollZoom": False, "displayModeBar": False, 'staticPlot': False})
@@ -562,26 +581,6 @@ def main():
         st.session_state.altitude_max = st.number_input(
             "Max altitude", 0, 4000, 3000, step=500
         )
-
-    # if st.session_state.target_latitude is not None:
-    #     st.markdown("---")
-    #     with st.expander("Sounding", expanded=False):
-    #         st.title("SOUNDING IS NOT FIXED YET")
-    #         date = datetime.datetime.combine(
-    #             st.session_state.forecast_date, st.session_state.forecast_time
-    #         )
-
-    #         with st.spinner("Building sounding..."):
-    #             sounding_fig = create_sounding(
-    #                 df_forecast_detailed,
-    #                 date=date.date(),
-    #                 hour=date.hour,
-    #                 altitude_max=st.session_state.altitude_max,
-    #                 lon=st.session_state.target_longitude,
-    #                 lat=st.session_state.target_latitude,
-    #             )
-    #         st.pyplot(sounding_fig)
-    #         plt.close()
 
     st.markdown(
         "Wind and sounding data from MEPS model (main model used by met.no), including the estimated ground temperature. I've probably made many errors in this process."
