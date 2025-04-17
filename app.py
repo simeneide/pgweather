@@ -441,15 +441,16 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, target_name, dat
         shared_xaxes=True,
         row_heights=[0.3, 0.7],
         vertical_spacing=0.05,
-        subplot_titles=("Wind Speed and Direction", "Thermal Temperature Difference"),
+        subplot_titles=("Wind Speed and Direction [m/s]", "Thermal Temperature Difference [°C]"),
     )
 
     ## WIND PLOT
-    # Subsample plot_frame in altitude to only get every second value
     wind_altitues = np.arange(200.0, 3000.0, 400)
     plot_frame_wind = plot_frame.sort("time", "altitude").filter(
         pl.col("altitude").is_in(wind_altitues)
     )
+
+    # Add arrows
     fig.add_trace(
         go.Scatter(
             x=plot_frame_wind.select("time").to_series().to_list(),
@@ -476,6 +477,24 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, target_name, dat
                     plot_frame_wind.select("wind_direction").to_numpy().squeeze(),
                 )
             ],
+        ),
+        row=1,
+        col=1,
+    )
+
+    # Add wind speed numbers next to the arrows
+    fig.add_trace(
+        go.Scatter(
+            x=plot_frame_wind.select("time").to_series().to_list(),
+            y=plot_frame_wind.select("altitude").to_numpy().squeeze(),
+            mode="text",
+            text=[
+                f"{spd:.1f}" for spd in plot_frame_wind.select("wind_speed").to_numpy().squeeze()
+            ],
+            textposition="middle right",
+            textfont=dict(color="black", size=11, family="Arial"),
+            showlegend=False,
+            hoverinfo="skip",
         ),
         row=1,
         col=1,
