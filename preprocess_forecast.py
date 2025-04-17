@@ -159,8 +159,7 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=4000):
     # Create tiny value at ground level to avoid finding the ground as the thermal top
     thermal_temp_diff = subset["thermal_temp_diff"]
     thermal_temp_diff = thermal_temp_diff.where(
-        (thermal_temp_diff.sum("altitude") > 0)
-        | (subset["altitude"] != subset.altitude.min()),
+        (thermal_temp_diff.sum("altitude") > 0) | (subset["altitude"] != subset.altitude.min()),
         thermal_temp_diff + 1e-6,
     )
     indices = (thermal_temp_diff > 0).argmax(dim="altitude")
@@ -211,9 +210,7 @@ if __name__ == "__main__":
     last_executed_forecast_timestamp = db.read(
         f"select max(forecast_timestamp) as max_forecast_timestamp from weather_forecasts"
     )
-    no_new_forecast_exists = (
-        last_executed_forecast_timestamp[0, 0] >= forecast_timestamp_datetime
-    )
+    no_new_forecast_exists = last_executed_forecast_timestamp[0, 0] >= forecast_timestamp_datetime
 
     if no_new_forecast_exists and (os.getenv("TRIGGER_SOURCE") != "push"):
         print(
@@ -227,20 +224,14 @@ if __name__ == "__main__":
         below_600_intervals = np.arange(0, 600, 100)
         above_600_intervals = np.arange(600, subset.altitude.max() + 200, 200)
         altitude_intervals = np.concatenate([below_600_intervals, above_600_intervals])
-        altitude_interpolated_subset = subset.interp(
-            altitude=altitude_intervals, method="linear"
-        )
+        altitude_interpolated_subset = subset.interp(altitude=altitude_intervals, method="linear")
 
         # %% Convert to dataframe
         df = (
             pl.DataFrame(altitude_interpolated_subset.to_dataframe().reset_index())
-            .with_columns(
-                forecast_timestamp=pl.lit(forecast_timestamp_str).cast(pl.Datetime)
-            )
+            .with_columns(forecast_timestamp=pl.lit(forecast_timestamp_str).cast(pl.Datetime))
             .filter(pl.col("elevation") <= pl.col("altitude"))
-            .with_columns(
-                thermal_height_above_ground=pl.col("altitude") - pl.col("elevation")
-            )
+            .with_columns(thermal_height_above_ground=pl.col("altitude") - pl.col("elevation"))
             .select(
                 "forecast_timestamp",
                 "time",
@@ -267,17 +258,12 @@ if __name__ == "__main__":
         points_forecast = gpd.GeoDataFrame(
             unique_lat_lon,
             geometry=[
-                Point(xy)
-                for xy in zip(unique_lat_lon["longitude"], unique_lat_lon["latitude"])
+                Point(xy) for xy in zip(unique_lat_lon["longitude"], unique_lat_lon["latitude"])
             ],
         )
         points_forecast.set_crs(areas_gdf.crs, inplace=True)
-        named_lat_lon = gpd.sjoin(
-            points_forecast, areas_gdf, how="left", predicate="within"
-        )
-        df_names = pl.DataFrame(
-            named_lat_lon[["longitude", "latitude", "name"]]
-        ).drop_nulls()
+        named_lat_lon = gpd.sjoin(points_forecast, areas_gdf, how="left", predicate="within")
+        df_names = pl.DataFrame(named_lat_lon[["longitude", "latitude", "name"]]).drop_nulls()
 
         # Group by name, time and altitude and calculate the mean of the other columns
         area_forecasts = (
@@ -294,9 +280,7 @@ if __name__ == "__main__":
         geojson_takeoffs.set_crs(areas_gdf.crs, inplace=True)
         takeoffs = gpd.sjoin_nearest(
             geojson_takeoffs, points_forecast, how="left", max_distance=10000
-        )[
-            ["name", "longitude_takeoff", "latitude_takeoff", "longitude", "latitude"]
-        ]  # ,'pge_link'
+        )[["name", "longitude_takeoff", "latitude_takeoff", "longitude", "latitude"]]  # ,'pge_link'
         df_takeoffs = pl.DataFrame(takeoffs)
 
         point_forecasts = (
