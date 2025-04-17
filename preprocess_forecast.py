@@ -307,14 +307,19 @@ if __name__ == "__main__":
             .with_columns(point_type=pl.lit("takeoff"))
         )
 
+        point_forecasts = pl.concat(
+            [point_forecasts, area_forecasts.select(point_forecasts.columns)],
+            how="vertical_relaxed",
         )
-        
+
         # Save to aiven db
         print("Save area forecast to db..")
         db.write(area_forecasts, "area_forecasts", if_table_exists="replace")
         print("saving detailed forecast to db...")
         db.write(point_forecasts, "detailed_forecasts", if_table_exists="replace")
-        print(f"saved {len(point_forecasts)} point forecasts and {len(area_forecasts)} area forecasts to db.")
+        print(
+            f"saved {len(point_forecasts)} point forecasts and {len(area_forecasts)} area forecasts to db."
+        )
 
         # create_index_query = "CREATE INDEX idx_time_name ON weather_forecasts (time, longitude, latitude);"
         # res = db.execute_query(create_index_query)
