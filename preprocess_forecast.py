@@ -58,7 +58,7 @@ def find_latest_meps_file():
     return file_path
 
 
-def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=3000):
+def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=4000):
     """
     file_path=None
     altitude_min=0
