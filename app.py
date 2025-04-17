@@ -79,14 +79,10 @@ def load_data(forecast_type="detailed"):
             [
                 pl.col("forecast_timestamp")
                 .cast(pl.Datetime)
-                .dt.replace_time_zone(
-                    "UTC"
-                ),  # .dt.convert_time_zone("Europe/Brussels"),
+                .dt.replace_time_zone("UTC"),  # .dt.convert_time_zone("Europe/Brussels"),
                 pl.col("time")
                 .cast(pl.Datetime)
-                .dt.replace_time_zone(
-                    "UTC"
-                ),  # .dt.convert_time_zone("Europe/Brussels"),
+                .dt.replace_time_zone("UTC"),  # .dt.convert_time_zone("Europe/Brussels"),
             ]
         )
 
@@ -150,9 +146,7 @@ def create_sounding(_subset, date, hour, lon, lat, altitude_max=3000):
         for i in range(T0.shape[1]):
             ax.plot(T_adiabatic[:, i], alts, "r:", alpha=0.5)
 
-    ax.plot(
-        temperatures, altitudes, label=f"temp {pd.to_datetime(date).strftime('%H:%M')}"
-    )
+    ax.plot(temperatures, altitudes, label=f"temp {pd.to_datetime(date).strftime('%H:%M')}")
 
     # Plot the temperature of the rising air parcel
     T_surface = temperatures[-1] + 3
@@ -169,9 +163,7 @@ def create_sounding(_subset, date, hour, lon, lat, altitude_max=3000):
 
     ax.set_xlabel("Temperature (°C)")
     ax.set_ylabel("Altitude (m)")
-    ax.set_title(
-        f"Temperature Profile and Dry Adiabatic Lapse Rate for {date} {hour}:00"
-    )
+    ax.set_title(f"Temperature Profile and Dry Adiabatic Lapse Rate for {date} {hour}:00")
     ax.legend(title="Time")
     xmin, xmax = temperatures.min() - 3, temperatures.max() + 3
     ax.set_xlim(xmin, xmax)
@@ -185,15 +177,12 @@ def date_controls(df_forecast_detailed):
     def get_forecast_days(df_forecast_detailed):
         start_stop_time = [
             df_forecast_detailed.get_column("time").min(),
-            df_forecast_detailed.get_column("time").max()
-            - datetime.timedelta(hours=12),
+            df_forecast_detailed.get_column("time").max() - datetime.timedelta(hours=12),
         ]
         today = datetime.datetime.now().date()
 
         # Generate available days within the dataset's time range
-        available_days = pd.date_range(
-            start=start_stop_time[0], end=start_stop_time[1]
-        ).date
+        available_days = pd.date_range(start=start_stop_time[0], end=start_stop_time[1]).date
         return available_days, today
 
     available_days, today = get_forecast_days(df_forecast_detailed)
@@ -319,9 +308,7 @@ def build_map(
         name_values = subset.get_column("name").to_numpy()
 
         # Determine whether a point is selected
-        selected_points = (latitude_values == selected_lat) & (
-            longitude_values == selected_lon
-        )
+        selected_points = (latitude_values == selected_lat) & (longitude_values == selected_lon)
 
         # Use conditional logic to define marker properties
         marker_size = np.where(selected_points, 20, 9)  # Larger size for selected point
@@ -353,9 +340,7 @@ def build_map(
 
     fig.update_layout(
         map_style="open-street-map",
-        map=dict(
-            center=dict(lat=selected_lat, lon=selected_lon), zoom=st.session_state.zoom
-        ),
+        map=dict(center=dict(lat=selected_lat, lon=selected_lon), zoom=st.session_state.zoom),
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
     )
     return fig
@@ -447,9 +432,7 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, target_name, dat
         output_frame.join_asof(
             location_data.sort("altitude"), on="altitude", by="time", strategy="nearest"
         )
-        .with_columns(
-            wind_direction=-pl.arctan2("y_wind_ml", "x_wind_ml").degrees() + 90
-        )
+        .with_columns(wind_direction=-pl.arctan2("y_wind_ml", "x_wind_ml").degrees() + 90)
         .sort("time")
     )
     fig = make_subplots(
@@ -618,9 +601,7 @@ def main():
         )
 
     with st.expander("More settings", expanded=False):
-        st.session_state.altitude_max = st.number_input(
-            "Max altitude", 0, 4000, 3000, step=500
-        )
+        st.session_state.altitude_max = st.number_input("Max altitude", 0, 4000, 3000, step=500)
 
     st.markdown(
         "Wind and sounding data from MEPS model (main model used by met.no), including the estimated ground temperature. I've probably made many errors in this process."
