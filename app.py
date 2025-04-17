@@ -25,14 +25,26 @@ def update_session_and_query_parameters(**kwargs):
         "target_latitude": 61.2479,
         "target_longitude": 7.08998,
         "selected_timestamp": datetime.datetime.now() + datetime.timedelta(hours=24),
-        "altitude_max": 3000,
-        "zoom": 7,  # Default zoom level
+        "altitude_max": 3500,
+        "zoom": 6,  # Default zoom level
     }
 
     # Initialize or update session state with query parameters, defaults, or overrides from kwargs
     for key, default_value in default_values.items():
         if key in kwargs:
             st.session_state[key] = kwargs[key]
+        elif (key in st.query_params) & (key == "target_name"):
+            st.session_state[key] = st.query_params[key]
+        # elif (key in st.query_params) & (key == "selected_timestamp"):
+        #     # Convert the string to a datetime object
+        #     st.session_state[key] = datetime.datetime.fromisoformat(st.query_params[key])
+        #     print(st.session_state[key])
+        #     if key == "selected_timestamp":
+        #         st.session_state[key] = datetime.datetime.fromisoformat(st.query_params[key])
+        #     elif key == "altitude_max" or key == "zoom":
+        #         st.session_state[key] = int(st.query_params[key])
+        #     else:
+        #         st.session_state[key] = st.query_params[key]
         elif key not in st.session_state:
             st.session_state[key] = default_value
 
@@ -40,9 +52,9 @@ def update_session_and_query_parameters(**kwargs):
     st.query_params.update(
         {
             "target_name": st.session_state.target_name,
-            "selected_timestamp": st.session_state.selected_timestamp.isoformat(),
-            "altitude_max": str(st.session_state.altitude_max),
-            "zoom": str(st.session_state.zoom),  # Adding zoom to query params
+            # "selected_timestamp": st.session_state.selected_timestamp.isoformat(),
+            # "altitude_max": str(st.session_state.altitude_max),
+            # "zoom": str(st.session_state.zoom),  # Adding zoom to query params
         }
     )
 
@@ -236,9 +248,9 @@ def date_controls(df_forecast_detailed):
         st.session_state.selected_timestamp = utc_time
         st.rerun()
 
-    st.write(
-        f"Selected time: {selected_time_cet.strftime('%Y-%m-%d %H:%M')} CET, {utc_time.strftime('%Y-%m-%d %H:%M')} UTC"
-    )
+    # st.write(
+    #     f"Selected time: {selected_time_cet.strftime('%Y-%m-%d %H:%M')} CET, {utc_time.strftime('%Y-%m-%d %H:%M')} UTC"
+    # )
 
 
 @st.cache_data(ttl=1800)
