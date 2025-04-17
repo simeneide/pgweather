@@ -7,10 +7,12 @@ import os
 from dotenv import load_dotenv
 import geopandas as gpd
 from shapely.geometry import Point
+
 load_dotenv()
 import db_utils
 import polars as pl
 import takeoff_utils
+
 
 # %%
 def compute_thermal_temp_difference(subset):
@@ -194,6 +196,7 @@ def subsample_lat_lon(dataset, lat_stride=2, lon_stride=2):
 
     return subsampled_dataset
 
+
 if __name__ == "__main__":
     dataset_file_path = find_latest_meps_file()
     forecast_timestamp_str = extract_timestamp(dataset_file_path.split("/")[-1])
@@ -220,21 +223,24 @@ if __name__ == "__main__":
     else:
         subset = load_meps_for_location(dataset_file_path)
 
-        #%% Interpolate altitude and subsample lat lon
+        # %% Interpolate altitude and subsample lat lon
         below_600_intervals = np.arange(0, 600, 100)
         above_600_intervals = np.arange(600, subset.altitude.max() + 200, 200)
         altitude_intervals = np.concatenate([below_600_intervals, above_600_intervals])
-        altitude_interpolated_subset = subset.interp(altitude=altitude_intervals, method="linear")
+        altitude_interpolated_subset = subset.interp(
+            altitude=altitude_intervals, method="linear"
+        )
 
-
-        #%% Convert to dataframe
+        # %% Convert to dataframe
         df = (
             pl.DataFrame(altitude_interpolated_subset.to_dataframe().reset_index())
             .with_columns(
                 forecast_timestamp=pl.lit(forecast_timestamp_str).cast(pl.Datetime)
             )
-            .filter(pl.col("elevation")<=pl.col("altitude"))
-            .with_columns(thermal_height_above_ground=pl.col("altitude")-pl.col("elevation"))
+            .filter(pl.col("elevation") <= pl.col("altitude"))
+            .with_columns(
+                thermal_height_above_ground=pl.col("altitude") - pl.col("elevation")
+            )
             .select(
                 "forecast_timestamp",
                 "time",
@@ -248,48 +254,59 @@ if __name__ == "__main__":
                 "wind_speed",
                 "thermal_temp_diff",
                 "thermal_top",
-                "thermal_height_above_ground"
+                "thermal_height_above_ground",
             )
         )
-        #%% categorize all points into a kommunenavn
+        # %% categorize all points into a kommunenavn
         # Step 1: Read the GeoJSON file
         # hentet fra https://github.com/robhop/fylker-og-kommuner/blob/main/Kommuner-S.geojson
-        geojson_path = 'Kommuner-S.geojson'
-        areas_gdf = gpd.read_file(geojson_path)[['geometry','name']]
+        geojson_path = "Kommuner-S.geojson"
+        areas_gdf = gpd.read_file(geojson_path)[["geometry", "name"]]
         unique_lat_lon = df.select("longitude", "latitude").unique().to_pandas()
-        
+
         points_forecast = gpd.GeoDataFrame(
             unique_lat_lon,
-            geometry=[Point(xy) for xy in zip(unique_lat_lon['longitude'], unique_lat_lon['latitude'])]
+            geometry=[
+                Point(xy)
+                for xy in zip(unique_lat_lon["longitude"], unique_lat_lon["latitude"])
+            ],
         )
         points_forecast.set_crs(areas_gdf.crs, inplace=True)
-        named_lat_lon = gpd.sjoin(points_forecast, areas_gdf, how='left', predicate='within')
-        df_names = pl.DataFrame(named_lat_lon[['longitude','latitude','name']]).drop_nulls()
+        named_lat_lon = gpd.sjoin(
+            points_forecast, areas_gdf, how="left", predicate="within"
+        )
+        df_names = pl.DataFrame(
+            named_lat_lon[["longitude", "latitude", "name"]]
+        ).drop_nulls()
 
         # Group by name, time and altitude and calculate the mean of the other columns
         area_forecasts = (
-            df
-            .join(df_names, on=['longitude','latitude'], how='inner')
-            .group_by("forecast_timestamp","time","name","altitude")
+            df.join(df_names, on=["longitude", "latitude"], how="inner")
+            .group_by("forecast_timestamp", "time", "name", "altitude")
             .median()
+            .with_columns(point_type=pl.lit("area"))
         )
 
         # get takeoffs and find nearest forecast point
         geojson_takeoffs = takeoff_utils.fetch_takeoffs_norway()
-        geojson_takeoffs['latitude_takeoff'] = geojson_takeoffs.geometry.y
-        geojson_takeoffs['longitude_takeoff'] = geojson_takeoffs.geometry.x
+        geojson_takeoffs["latitude_takeoff"] = geojson_takeoffs.geometry.y
+        geojson_takeoffs["longitude_takeoff"] = geojson_takeoffs.geometry.x
         geojson_takeoffs.set_crs(areas_gdf.crs, inplace=True)
-        takeoffs = gpd.sjoin_nearest(geojson_takeoffs, points_forecast, how='left', max_distance=10000)[['name','longitude_takeoff','latitude_takeoff','longitude','latitude','pge_link']]
+        takeoffs = gpd.sjoin_nearest(
+            geojson_takeoffs, points_forecast, how="left", max_distance=10000
+        )[
+            ["name", "longitude_takeoff", "latitude_takeoff", "longitude", "latitude"]
+        ]  # ,'pge_link'
         df_takeoffs = pl.DataFrame(takeoffs)
 
         point_forecasts = (
-            df
-            .join(df_takeoffs, on=['longitude','latitude'], how='inner')
+            df.join(df_takeoffs, on=["longitude", "latitude"], how="inner")
             # deselect lat lon
-            .select(
-                pl.exclude("longitude","latitude")
-            )
-            .rename({'longitude_takeoff':'longitude','latitude_takeoff':'latitude'})
+            .select(pl.exclude("longitude", "latitude"))
+            .rename({"longitude_takeoff": "longitude", "latitude_takeoff": "latitude"})
+            .with_columns(point_type=pl.lit("takeoff"))
+        )
+
         )
         
         # Save to aiven db
