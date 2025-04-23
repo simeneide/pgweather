@@ -580,11 +580,18 @@ def main():
         st.session_state.altitude_max = st.number_input("Max altitude", 0, 4000, 3000, step=500)
 
     st.markdown(
-        f"""Værvarselet er hentet fra Meteorlogisk institutt sin MEPS modell. Dette varselet er generert **{df_forecast_detailed["forecast_timestamp"][0]}**. Dette er en prototype for å vise hvordan "yr fungerer i høyden". 
-        - Varselet er generert for en rekke paragliderstarter og kommuner. 
-        - På kommunenivå er varselet medianen av alle punktene i kommunen.
-        - Airgram viser temperaturforskjellen mellom lufta og bakken på samme punkt, begge estimert fra modellen. Har ikke full kontroll på hvordan bakketemperaturen beregnes, men det er noe terrengmodell der, feks blir det ingen temperaturforskjell i fjorden.
-        - Garantert noen feil her, jeg tar ingen ansvar for tidlige landinger!
+        f""" \
+# Om appen
+
+- Dette varselet er generert **{df_forecast_detailed["forecast_timestamp"][0]}**.
+- Værvarselet er hentet fra Meteorlogisk institutt sin MEPS modell. 
+- Dette er en prototype for å vise hvordan "yr fungerer i høyden".
+- Varselet er generert for en rekke paragliderstarter og kommuner. 
+- På kommunenivå er varselet medianen av alle punktene i kommunen.
+- Airgram viser temperaturforskjellen mellom lufta og bakken på samme punkt, begge estimert fra modellen. Har ikke full kontroll på hvordan bakketemperaturen beregnes, men det er noe terrengmodell der, feks blir det ingen temperaturforskjell i fjorden.
+- Garantert noen feil her, jeg tar ingen ansvar for tidlige landinger!
+- Gi gjerne feedback, eller enda bedre, bidra! [Github repo](https://github.com/simeneide/pgweather)
+- Laget av Simen Eide
 """
     )
 
