@@ -1,19 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-import matplotlib.colors as mcolors
 import streamlit as st
 import datetime
-import os
-from utils import latlon_to_xy
+from utils import interpolate_color
 import plotly.graph_objects as go
-from matplotlib.colors import to_hex, LinearSegmentedColormap
 from plotly.subplots import make_subplots
 import db_utils
 import polars as pl
 import json
 import pytz
-from zoneinfo import ZoneInfo
 
 
 def update_session_and_query_parameters(**kwargs):
@@ -99,31 +95,6 @@ def load_data(forecast_type="detailed"):
         )
 
     return df_forecast_detailed
-
-
-@st.cache_resource()
-def wind_and_temp_colorscales(wind_max=20, tempdiff_max=8):
-    # build colorscale for thermal temperature difference
-    wind_colors = ["grey", "blue", "green", "yellow", "red", "purple"]
-    wind_positions = [0, 0.5, 3, 7, 12, 20]  # transition points
-    wind_positions_norm = [i / wind_max for i in wind_positions]
-
-    # Create the colormap
-    windcolors = mcolors.LinearSegmentedColormap.from_list(
-        "", list(zip(wind_positions_norm, wind_colors))
-    )
-
-    # build colorscale for thermal temperature difference
-    thermal_colors = ["white", "white", "red", "violet", "darkviolet"]
-    thermal_positions = [0, 0.2, 2.0, 4, 8]
-    thermal_positions_norm = [i / tempdiff_max for i in thermal_positions]
-
-    # Create the colormap
-    tempcolors = mcolors.LinearSegmentedColormap.from_list(
-        "", list(zip(thermal_positions_norm, thermal_colors))
-    )
-
-    return windcolors, tempcolors
 
 
 @st.cache_data(ttl=7200)
@@ -358,29 +329,6 @@ def build_map(
     return fig
 
 
-@st.cache_data(ttl=3600)
-def interpolate_color(
-    wind_speed,
-    thresholds=[2, 4, 5, 14],
-    colors=["grey", "green", "orange", "red", "black"],
-):
-    # Normalize thresholds to range [0, 1]
-    norm_thresholds = [t / max(thresholds) for t in thresholds]
-    norm_thresholds = [0] + norm_thresholds + [1]
-
-    # Extend color list to match normalized thresholds
-    extended_colors = [colors[0]] + colors + [colors[-1]]
-
-    # Create colormap
-    cmap = LinearSegmentedColormap.from_list(
-        "wind_speed_cmap", list(zip(norm_thresholds, extended_colors)), N=256
-    )
-
-    # Normalize wind speed to range [0, 1] and get color
-    norm_wind_speed = wind_speed / max(thresholds)
-    return to_hex(cmap(np.clip(norm_wind_speed, 0, 1)))
-
-
 # @st.cache_data(ttl=3600)
 def create_daily_thermal_and_wind_airgram(df_forecast_detailed, target_name, date):
     """
@@ -575,9 +523,6 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, target_name, dat
 def main():
     df_forecast_detailed = load_data("detailed")
     st.title("Termikkvarsel")
-    st.markdown(
-        f"Weather forecast from met.no's MEPS model. Current forecast is generated **{df_forecast_detailed['forecast_timestamp'][0]}**"
-    )
 
     update_session_and_query_parameters()
 
@@ -635,7 +580,12 @@ def main():
         st.session_state.altitude_max = st.number_input("Max altitude", 0, 4000, 3000, step=500)
 
     st.markdown(
-        "Wind and sounding data from MEPS model (main model used by met.no), including the estimated ground temperature. I've probably made many errors in this process."
+        f"""Værvarselet er hentet fra Meteorlogisk institutt sin MEPS modell. Dette varselet er generert **{df_forecast_detailed["forecast_timestamp"][0]}**. Dette er en prototype for å vise hvordan "yr fungerer i høyden". 
+        - Varselet er generert for en rekke paragliderstarter og kommuner. 
+        - På kommunenivå er varselet medianen av alle punktene i kommunen.
+        - Airgram viser temperaturforskjellen mellom lufta og bakken på samme punkt, begge estimert fra modellen. Har ikke full kontroll på hvordan bakketemperaturen beregnes, men det er noe terrengmodell der, feks blir det ingen temperaturforskjell i fjorden.
+        - Garantert noen feil her, jeg tar ingen ansvar for tidlige landinger!
+"""
     )
 
 
