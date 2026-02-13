@@ -51,10 +51,13 @@ def create_dash_app() -> Dash:
     app = Dash(
         __name__,
         title="\U0001fa82 Termikkvarselet",
+        update_title=None,
         requests_pathname_prefix="/",
         suppress_callback_exceptions=True,
         assets_folder=str(_PROJECT_ROOT / "assets"),
     )
+    # Use emoji SVG as favicon
+    app._favicon = "favicon.svg"
 
     df = forecast_service.load_forecast_data()
     available_times = forecast_service.get_available_times(df)
