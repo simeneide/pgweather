@@ -13,18 +13,6 @@ def _get_database_uri() -> str:
     database_url = os.getenv("SUPABASE_DB_URL")
     if database_url:
         return database_url
-
-    # Backward-compatible fallback for legacy Aiven credentials.
-    aiven_user = os.getenv("AIVEN_USER")
-    aiven_password = os.getenv("AIVEN_PASSWORD")
-    if aiven_user and aiven_password:
-        return (
-            "postgres://"
-            f"{aiven_user}:{aiven_password}"
-            "@pg-weather-pg-weather.b.aivencloud.com:20910/defaultdb"
-            "?sslmode=require"
-        )
-
     raise RuntimeError("Database credentials missing. Set SUPABASE_DB_URL.")
 
 

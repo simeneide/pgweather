@@ -1,19 +1,9 @@
+/* Hide the map's built-in attribution overlay (we show our own footer) */
 .maplibregl-ctrl-attrib-button,
-.mapboxgl-ctrl-attrib-button {
-  display: none !important;
-}
-
+.mapboxgl-ctrl-attrib-button,
 .maplibregl-ctrl-attrib,
 .mapboxgl-ctrl-attrib {
-  padding: 0 6px !important;
-  background: rgba(255, 255, 255, 0.8) !important;
-  font-size: 10px !important;
-}
-
-.maplibregl-ctrl-attrib .maplibregl-ctrl-attrib-inner,
-.mapboxgl-ctrl-attrib .mapboxgl-ctrl-attrib-inner {
-  display: block !important;
-  font-size: 10px !important;
+  display: none !important;
 }
 
 /* Pill-style radio buttons for date/time picker */
@@ -57,13 +47,7 @@
   background: #2563eb;
 }
 
-/* Smaller variant for time slots */
-.pill-radio-sm .dash-options-list-option {
-  padding: 3px 10px;
-  font-size: 13px;
-  min-width: 50px;
-  justify-content: center;
-}
+
 
 /* Fix location dropdown: search bar stuck in middle of list */
 .dash-dropdown-content {

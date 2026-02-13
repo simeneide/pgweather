@@ -23,5 +23,5 @@ jobs:
       - name: Run data fetch
         run: uv run python preprocess_forecast.py
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           TRIGGER_SOURCE: ${{ github.event_name }}

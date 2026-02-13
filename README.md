@@ -16,7 +16,7 @@ src/web/main.py              # FastAPI app, mounts Dash, /api/health and /api/me
 src/web/dash_ui.py           # Dash layout + callbacks (date/time picker, location, map, airgram)
 src/web/forecast_service.py  # Data loading, map/airgram builders, caching
 assets/map.css               # CSS for pill buttons, map attribution, dropdown fixes
-db_utils.py                  # Database wrapper (reads DATABASE_URL or SUPABASE_DB_URL)
+db_utils.py                  # Database wrapper (reads SUPABASE_DB_URL)
 preprocess_forecast.py       # MEPS forecast pipeline (GitHub Actions)
 Kommuner-S.geojson           # Norwegian municipality boundaries for area overlay
 app.py                       # Legacy Streamlit UI (no longer the entrypoint)
@@ -25,7 +25,7 @@ app.py                       # Legacy Streamlit UI (no longer the entrypoint)
 ## Run locally
 
 ```bash
-# Requires DATABASE_URL or SUPABASE_DB_URL env var pointing to Supabase Postgres
+# Requires SUPABASE_DB_URL env var pointing to Supabase Postgres
 uv run uvicorn src.web.main:app --reload --host 0.0.0.0 --port 8080
 ```
 
@@ -36,7 +36,7 @@ uv run uvicorn src.web.main:app --reload --host 0.0.0.0 --port 8080
 
 ```bash
 # Set the database secret (one-time)
-fly secrets set DATABASE_URL="postgresql://postgres.<PROJECT_REF>:<PASSWORD>@aws-0-eu-north-1.pooler.supabase.com:6543/postgres" -a pgweather
+fly secrets set SUPABASE_DB_URL="postgresql://postgres.<PROJECT_REF>:<PASSWORD>@aws-0-eu-north-1.pooler.supabase.com:6543/postgres" -a pgweather
 
 # Deploy
 fly deploy -a pgweather

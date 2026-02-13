@@ -47,89 +47,6 @@ def _day_label(iso_date: str) -> str:
     return d.strftime("%a %d")
 
 
-def _time_label(utc_time: dt.datetime) -> str:
-    return _to_local(utc_time).strftime("%H:%M")
-
-
-def _build_yr_strip(name: str, day: dt.date, selected_hour: int, df=None) -> html.Div:
-    """Build a horizontal weather strip with Yr icons, temp, and precip."""
-    entries = forecast_service.get_yr_weather_for_day(name, day, df)
-    if not entries:
-        return html.Div(
-            "Weather symbols unavailable",
-            style={"color": "#999", "fontSize": "13px"},
-        )
-
-    cells = []
-    for e in entries:
-        hour = e["local_hour"]
-        is_selected = hour == selected_hour
-        temp = e.get("air_temperature")
-        precip = e.get("precipitation")
-        temp_str = f"{temp:.0f}°" if temp is not None else ""
-        precip_str = f"{precip:.1f}" if precip and precip > 0 else ""
-
-        cell_style = {
-            "display": "flex",
-            "flexDirection": "column",
-            "alignItems": "center",
-            "padding": "2px 4px",
-            "minWidth": "42px",
-            "borderRadius": "6px",
-            "fontSize": "12px",
-            "lineHeight": "1.3",
-        }
-        if is_selected:
-            cell_style["background"] = "#e0edff"
-            cell_style["fontWeight"] = 700
-
-        cells.append(
-            html.Div(
-                [
-                    html.Div(
-                        f"{hour:02d}", style={"color": "#666", "fontSize": "11px"}
-                    ),
-                    html.Img(
-                        src=e["icon_url"],
-                        style={"width": "28px", "height": "28px"},
-                    ),
-                    html.Div(temp_str, style={"fontWeight": 600}),
-                    html.Div(
-                        precip_str,
-                        style={"color": "#3b82f6", "fontSize": "11px"},
-                    )
-                    if precip_str
-                    else None,
-                ],
-                style=cell_style,
-            )
-        )
-
-    return html.Div(
-        [
-            html.Div(
-                cells,
-                style={
-                    "display": "flex",
-                    "gap": "2px",
-                    "overflowX": "auto",
-                    "padding": "6px 4px",
-                },
-            ),
-            html.Div(
-                "Weather from Yr (MET Norway)",
-                style={"fontSize": "10px", "color": "#999", "paddingLeft": "4px"},
-            ),
-        ],
-        style={
-            "background": "#f8fafc",
-            "border": "1px solid #e2e8f0",
-            "borderRadius": "8px",
-            "padding": "4px",
-        },
-    )
-
-
 def create_dash_app() -> Dash:
     app = Dash(
         __name__,
@@ -167,19 +84,15 @@ def create_dash_app() -> Dash:
     # Build day radio options
     day_radio_options = [{"label": _day_label(dk), "value": dk} for dk in day_keys]
 
-    # Build time radio options for the default day
-    default_time_options = [
-        {"label": _time_label(t), "value": _to_iso(t)} for t in day_times
-    ]
-
     # Serialize days_map for client-side use
     days_map_serialized = {dk: [_to_iso(t) for t in ts] for dk, ts in days_map.items()}
 
     app.layout = html.Div(
         [
             dcc.Location(id="url", refresh=False),
-            # Store the full days_map so we can rebuild time options
+            # Stores
             dcc.Store(id="days-map-store", data=days_map_serialized),
+            dcc.Store(id="selected-time-store", data=default_time_iso),
             html.H1("Termikkvarsel"),
             html.Div(
                 [
@@ -191,18 +104,6 @@ def create_dash_app() -> Dash:
                         value=default_day,
                         inline=True,
                         className="pill-radio",
-                    ),
-                    # Time selector (RadioItems styled as pill buttons)
-                    html.Label(
-                        "Time (local)",
-                        style={"fontWeight": 600, "marginTop": "4px"},
-                    ),
-                    dcc.RadioItems(
-                        id="time-radio",
-                        options=default_time_options,
-                        value=default_time_iso,
-                        inline=True,
-                        className="pill-radio pill-radio-sm",
                     ),
                     # Location
                     html.Label(
@@ -278,43 +179,75 @@ def create_dash_app() -> Dash:
                 },
             ),
             dcc.Graph(id="map-graph", config={"displayModeBar": False}),
+            # Windgram with Yr icons embedded — tap to select hour
+            dcc.Graph(
+                id="airgram-graph",
+                config={
+                    "displayModeBar": False,
+                    "scrollZoom": False,
+                    "doubleClick": False,
+                },
+                style={"marginTop": "6px"},
+            ),
+            # Summary / forecast info at the bottom
             html.Div(
                 id="summary-text",
                 style={
-                    "margin": "6px 0 14px 0",
-                    "fontWeight": 600,
-                    "fontSize": "14px",
+                    "margin": "10px 0 0 0",
+                    "color": "#888",
+                    "fontSize": "12px",
                 },
             ),
-            # Yr weather strip
-            html.Div(id="yr-weather-strip", style={"margin": "0 0 14px 0"}),
-            dcc.Graph(id="airgram-graph", config={"displayModeBar": False}),
+            # Attribution footer
+            html.Footer(
+                [
+                    html.Span("Data: "),
+                    html.A(
+                        "MET Norway / MEPS",
+                        href="https://www.met.no/",
+                        target="_blank",
+                    ),
+                    html.Span(" | Weather symbols: "),
+                    html.A(
+                        "Yr",
+                        href="https://www.yr.no/",
+                        target="_blank",
+                    ),
+                    html.Span(" | Map: "),
+                    html.A(
+                        "OpenStreetMap",
+                        href="https://www.openstreetmap.org/copyright",
+                        target="_blank",
+                    ),
+                ],
+                style={
+                    "marginTop": "24px",
+                    "paddingTop": "12px",
+                    "borderTop": "1px solid #e2e8f0",
+                    "fontSize": "11px",
+                    "color": "#999",
+                    "textAlign": "center",
+                },
+            ),
         ],
         style={"maxWidth": "1200px", "margin": "0 auto", "padding": "16px"},
     )
 
-    # -----------------------------------------------------------------------
-    # Day changed -> rebuild time-radio options + auto-select best hour
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
+    # Day changed -> pick best time in new day and update store
+    # -------------------------------------------------------------------
     @app.callback(
-        Output("time-radio", "options"),
-        Output("time-radio", "value"),
+        Output("selected-time-store", "data", allow_duplicate=True),
         Input("day-radio", "value"),
-        State("time-radio", "value"),
+        State("selected-time-store", "data"),
         State("days-map-store", "data"),
+        prevent_initial_call=True,
     )
     def on_day_changed(day_key, current_time_iso, days_map_data):
         time_isos = days_map_data.get(day_key, [])
         if not time_isos:
-            return [], current_time_iso
+            return current_time_iso
 
-        # Build new options
-        options = [
-            {"label": _to_local(_from_iso(iso)).strftime("%H:%M"), "value": iso}
-            for iso in time_isos
-        ]
-
-        # Pick closest hour to current selection
         if current_time_iso:
             current_hour = _to_local(_from_iso(current_time_iso)).hour
         else:
@@ -329,11 +262,43 @@ def create_dash_app() -> Dash:
                 best_diff = diff
                 best_iso = iso
 
-        return options, best_iso
+        return best_iso
 
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
+    # Windgram click -> select time for map
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("selected-time-store", "data", allow_duplicate=True),
+        Input("airgram-graph", "clickData"),
+        State("selected-time-store", "data"),
+        State("days-map-store", "data"),
+        State("day-radio", "value"),
+        prevent_initial_call=True,
+    )
+    def on_windgram_clicked(click_data, current_time_iso, days_map_data, day_key):
+        if not click_data or "points" not in click_data:
+            return no_update
+        point = click_data["points"][0]
+        x_label = point.get("x")  # e.g. "12h"
+        if not x_label or not isinstance(x_label, str) or not x_label.endswith("h"):
+            return no_update
+
+        try:
+            clicked_hour = int(x_label.replace("h", ""))
+        except ValueError:
+            return no_update
+
+        # Find the UTC time matching this local hour in the current day
+        time_isos = days_map_data.get(day_key, [])
+        for iso in time_isos:
+            if _to_local(_from_iso(iso)).hour == clicked_hour:
+                return iso
+
+        return current_time_iso
+
+    # -------------------------------------------------------------------
     # Location from URL query param
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     @app.callback(
         Output("location-dropdown", "value", allow_duplicate=True),
         Input("url", "search"),
@@ -349,9 +314,9 @@ def create_dash_app() -> Dash:
             return location
         return current_value
 
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     # Location -> URL query param
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     @app.callback(
         Output("url", "search"),
         Input("location-dropdown", "value"),
@@ -363,15 +328,14 @@ def create_dash_app() -> Dash:
         params["location"] = [selected_name]
         return "?" + urlencode(params, doseq=True)
 
-    # -----------------------------------------------------------------------
-    # Main figures callback
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
+    # Main figures callback — driven by store + controls
+    # -------------------------------------------------------------------
     @app.callback(
         Output("map-graph", "figure"),
         Output("airgram-graph", "figure"),
         Output("summary-text", "children"),
-        Output("yr-weather-strip", "children"),
-        Input("time-radio", "value"),
+        Input("selected-time-store", "data"),
         Input("location-dropdown", "value"),
         Input("layer-radio", "value"),
         Input("zoom-slider", "value"),
@@ -389,6 +353,7 @@ def create_dash_app() -> Dash:
         selected_time_utc = _from_iso(selected_time_iso)
         selected_time_local = _to_local(selected_time_utc)
         df_now = forecast_service.load_forecast_data()
+
         map_fig = forecast_service.build_map_figure(
             selected_time=selected_time_utc,
             selected_name=selected_name,
@@ -396,12 +361,25 @@ def create_dash_app() -> Dash:
             zoom=zoom,
             df=df_now,
         )
+
+        # Fetch Yr data synced to MEPS hours
+        day = selected_time_local.date()
+        forecast_hours = forecast_service.get_forecast_hours_for_day(
+            selected_name, day, df_now
+        )
+        yr_entries = forecast_service.get_yr_weather_for_day(
+            selected_name, day, df_now, restrict_to_hours=forecast_hours
+        )
+
         airgram_fig = forecast_service.build_airgram_figure(
             target_name=selected_name,
-            selected_date=selected_time_local.date(),
+            selected_date=day,
             altitude_max=altitude_max,
+            yr_entries=yr_entries,
+            selected_hour=selected_time_local.hour,
             df=df_now,
         )
+
         summary = forecast_service.get_summary(selected_name, selected_time_utc, df_now)
         latest_ts = forecast_service.get_latest_forecast_timestamp(df_now)
         age_hours = (
@@ -413,16 +391,11 @@ def create_dash_app() -> Dash:
             f" local ({age_hours:.1f}h ago)"
         )
 
-        # Build Yr weather strip
-        yr_strip = _build_yr_strip(
-            selected_name, selected_time_local.date(), selected_time_local.hour, df_now
-        )
+        return map_fig, airgram_fig, merged
 
-        return map_fig, airgram_fig, merged, yr_strip
-
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     # Click map -> select location
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     @app.callback(
         Output("location-dropdown", "value", allow_duplicate=True),
         Input("map-graph", "clickData"),

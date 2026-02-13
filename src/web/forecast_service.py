@@ -11,7 +11,6 @@ import plotly.graph_objects as go
 import polars as pl
 import requests
 
-
 import db_utils
 
 logger = logging.getLogger(__name__)
@@ -25,6 +24,9 @@ _CACHE: dict[str, object] = {"loaded_at": None, "df": None}
 _YR_CACHE: dict[str, object] = {}  # key=(lat,lon) -> {"fetched_at": dt, "data": [...]}
 _YR_TTL_SECONDS = 1800  # 30 min cache per location
 _YR_ICON_BASE = "https://raw.githubusercontent.com/metno/weathericons/main/weather/svg"
+_YR_ICON_PNG_BASE = (
+    "https://raw.githubusercontent.com/metno/weathericons/main/weather/png"
+)
 _YR_USER_AGENT = "pgweather/1.0 github.com/simeneide/pgweather"
 
 
@@ -76,10 +78,38 @@ def _fetch_yr_forecast(lat: float, lon: float) -> list[dict]:
     return entries
 
 
-def get_yr_weather_for_day(
+def get_forecast_hours_for_day(
     name: str, day: dt.date, df: Optional[pl.DataFrame] = None
+) -> list[int]:
+    """Return the local hours that have MEPS forecast data for *name* on *day*."""
+    frame = df if df is not None else load_forecast_data()
+    hours = (
+        frame.with_columns(time=pl.col("time").dt.convert_time_zone("Europe/Oslo"))
+        .filter(
+            (pl.col("time").dt.date() == day),
+            pl.col("name") == name,
+            pl.col("point_type") != "area",
+        )
+        .select(pl.col("time").dt.hour().alias("hour"))
+        .unique()
+        .sort("hour")
+        .get_column("hour")
+        .to_list()
+    )
+    return hours
+
+
+def get_yr_weather_for_day(
+    name: str,
+    day: dt.date,
+    df: Optional[pl.DataFrame] = None,
+    restrict_to_hours: Optional[list[int]] = None,
 ) -> list[dict]:
-    """Return Yr hourly weather for *name* on *day* (local time), 07-21h."""
+    """Return Yr hourly weather for *name* on *day* (local time).
+
+    If *restrict_to_hours* is given, only return entries whose local hour
+    is in that list (used to sync Yr strip with MEPS forecast hours).
+    """
     from zoneinfo import ZoneInfo
 
     local_tz = ZoneInfo("Europe/Oslo")
@@ -101,34 +131,26 @@ def get_yr_weather_for_day(
     if not entries:
         return []
 
-    # Filter to the requested local day, 07-21h
+    allowed_hours = set(restrict_to_hours) if restrict_to_hours else None
+
     result = []
     for e in entries:
         local_time = e["time"].astimezone(local_tz)
-        if local_time.date() == day and 7 <= local_time.hour <= 21 and e["symbol_code"]:
-            result.append(
-                {
-                    **e,
-                    "local_hour": local_time.hour,
-                    "icon_url": f"{_YR_ICON_BASE}/{e['symbol_code']}.svg",
-                }
-            )
+        if local_time.date() != day or not e["symbol_code"]:
+            continue
+        if allowed_hours is not None and local_time.hour not in allowed_hours:
+            continue
+        if allowed_hours is None and not (7 <= local_time.hour <= 21):
+            continue
+        result.append(
+            {
+                **e,
+                "local_hour": local_time.hour,
+                "icon_url": f"{_YR_ICON_BASE}/{e['symbol_code']}.svg",
+                "icon_png_url": f"{_YR_ICON_PNG_BASE}/{e['symbol_code']}.png",
+            }
+        )
     return result
-
-
-def _interpolate_color(
-    wind_speed: float,
-    thresholds: list[float] = [2, 4, 5, 14],
-    colors: list[str] = ["grey", "green", "orange", "red", "black"],
-) -> str:
-    norm_thresholds = [t / max(thresholds) for t in thresholds]
-    norm_thresholds = [0] + norm_thresholds + [1]
-    extended_colors = [colors[0]] + colors + [colors[-1]]
-    cmap = LinearSegmentedColormap.from_list(
-        "wind_speed_cmap", list(zip(norm_thresholds, extended_colors)), N=256
-    )
-    norm_wind_speed = wind_speed / max(thresholds)
-    return to_hex(cmap(np.clip(norm_wind_speed, 0, 1)))
 
 
 def _load_geojson() -> dict:
@@ -400,6 +422,8 @@ def build_airgram_figure(
     target_name: str,
     selected_date: dt.date,
     altitude_max: int,
+    yr_entries: Optional[list[dict]] = None,
+    selected_hour: Optional[int] = None,
     df: Optional[pl.DataFrame] = None,
 ) -> go.Figure:
     frame = df if df is not None else load_forecast_data()
@@ -442,25 +466,21 @@ def build_airgram_figure(
     )
 
     plot_frame = (
-        output_frame.join_asof(
-            location_data.sort("altitude"), on="altitude", by="time", strategy="nearest"
+        output_frame.sort("time", "altitude")
+        .with_columns(pl.col("altitude").set_sorted())
+        .join_asof(
+            location_data.sort("time", "altitude").with_columns(
+                pl.col("altitude").set_sorted()
+            ),
+            on="altitude",
+            by="time",
+            strategy="nearest",
         )
         .with_columns(
             wind_direction=-pl.arctan2("y_wind_ml", "x_wind_ml").degrees() + 90
         )
         .sort("time")
     )
-
-    fig = go.Figure()
-
-    # --- 1) Thermal heatmap (background) ---
-    # Pivot thermal data into a 2D grid for the heatmap
-    thermal_pivot = plot_frame.pivot(
-        on="time", index="altitude", values="thermal_temp_diff"
-    ).sort("altitude")
-    z_altitudes = thermal_pivot["altitude"].to_numpy()
-    z_times = [c for c in thermal_pivot.columns if c != "altitude"]
-    z_matrix = thermal_pivot.select(z_times).to_numpy()
 
     # Format time labels as "HHh"
     time_labels = []
@@ -470,10 +490,30 @@ def build_airgram_figure(
         else:
             time_labels.append(str(t))
 
+    # Add a formatted time_label column for consistent x-axis values
+    ts_to_label = {t: lbl for t, lbl in zip(new_timestamps, time_labels)}
+    plot_frame = plot_frame.with_columns(
+        pl.col("time")
+        .map_elements(lambda t: ts_to_label.get(t, str(t)), return_dtype=pl.Utf8)
+        .alias("time_label")
+    )
+
+    fig = go.Figure()
+
+    # --- 1) Thermal heatmap (background) ---
+    # Pivot thermal data into a 2D grid for the heatmap
+    thermal_pivot = plot_frame.pivot(
+        on="time_label", index="altitude", values="thermal_temp_diff"
+    ).sort("altitude")
+    z_altitudes = thermal_pivot["altitude"].to_numpy()
+    # Columns are the time labels; select them in the right order
+    z_cols = [c for c in time_labels if c in thermal_pivot.columns]
+    z_matrix = thermal_pivot.select(z_cols).to_numpy()
+
     fig.add_trace(
         go.Heatmap(
             z=z_matrix,
-            x=time_labels,
+            x=z_cols,
             y=z_altitudes,
             colorscale=_THERMAL_COLORSCALE,
             zmin=0,
@@ -499,25 +539,23 @@ def build_airgram_figure(
     )
 
     # --- 3) Wind arrows with speed labels (overlaid) ---
-    # Use every 250m for wind arrows to get a dense grid like the reference
-    wind_step = 250
-    wind_altitudes = np.arange(
-        max(wind_step, np.ceil(elevation / wind_step) * wind_step),
-        float(altitude_max) + wind_step,
-        wind_step,
-    )
+    # Pick altitudes from the actual data grid closest to every 500m
+    available_alts = np.array(sorted(plot_frame["altitude"].unique().to_list()))
+    above_ground = available_alts[available_alts >= elevation]
+    if len(above_ground) > 0:
+        target_alts = np.arange(above_ground[0], float(altitude_max) + 1, 500)
+        # Snap each target to the nearest altitude in the data grid
+        wind_altitudes = np.unique(
+            [above_ground[np.argmin(np.abs(above_ground - t))] for t in target_alts]
+        )
+    else:
+        wind_altitudes = np.array([])
     plot_frame_wind = plot_frame.sort("time", "altitude").filter(
-        pl.col("altitude").is_in(wind_altitudes)
+        pl.col("altitude").is_in(wind_altitudes.tolist())
     )
 
     if len(plot_frame_wind) > 0:
-        wind_times_raw = plot_frame_wind["time"].to_list()
-        wind_time_labels = []
-        for t in wind_times_raw:
-            if hasattr(t, "strftime"):
-                wind_time_labels.append(t.strftime("%Hh"))
-            else:
-                wind_time_labels.append(str(t))
+        wind_time_labels = plot_frame_wind["time_label"].to_list()
         wind_alts = plot_frame_wind["altitude"].to_numpy()
         wind_dirs = plot_frame_wind["wind_direction"].to_numpy()
         wind_spds = plot_frame_wind["wind_speed"].to_numpy()
@@ -560,17 +598,82 @@ def build_airgram_figure(
             )
         )
 
+    # --- 4) Yr weather icons & temp above the chart ---
+    yr_by_label: dict[str, dict] = {}
+    if yr_entries:
+        for e in yr_entries:
+            label = f"{e['local_hour']:02d}h"
+            yr_by_label[label] = e
+
+    has_yr = bool(yr_by_label)
+    yr_margin_t = 100 if has_yr else 30
+
+    images = []
+    annotations = []
+    if has_yr:
+        n_cols = len(time_labels)
+        for i, label in enumerate(time_labels):
+            e = yr_by_label.get(label)
+            if not e:
+                continue
+            x_frac = (i + 0.5) / n_cols
+
+            # Weather icon above the hour labels
+            images.append(
+                dict(
+                    source=e["icon_png_url"],
+                    x=x_frac,
+                    y=1.06,
+                    xref="paper",
+                    yref="paper",
+                    xanchor="center",
+                    yanchor="bottom",
+                    sizex=0.07,
+                    sizey=0.07,
+                    sizing="contain",
+                    layer="above",
+                )
+            )
+
+            # Temperature text above the icon
+            temp = e.get("air_temperature")
+            temp_str = f"{temp:.0f}°" if temp is not None else ""
+            annotations.append(
+                dict(
+                    x=x_frac,
+                    y=1.16,
+                    xref="paper",
+                    yref="paper",
+                    text=f"<b>{temp_str}</b>",
+                    showarrow=False,
+                    font=dict(size=10, color="#333"),
+                )
+            )
+
+    # --- 5) Highlighted column for selected hour ---
+    selected_label = f"{selected_hour:02d}h" if selected_hour is not None else None
+    if selected_label and selected_label in time_labels:
+        idx = time_labels.index(selected_label)
+        # For a category axis, shape x coords use category values directly.
+        # To span the full column width we go from idx-0.5 to idx+0.5
+        fig.add_shape(
+            type="rect",
+            x0=idx - 0.5,
+            x1=idx + 0.5,
+            y0=0,
+            y1=altitude_max,
+            xref="x",
+            yref="y",
+            fillcolor="rgba(59,130,246,0.10)",
+            line=dict(width=1.5, color="rgba(59,130,246,0.4)"),
+            layer="above",
+        )
+
     # --- Layout ---
     fig.update_layout(
-        height=700,
-        title=dict(
-            text=(
-                f"Windgram – {target_name}<br>"
-                f"<span style='font-size:13px;color:#666'>"
-                f"{selected_date.strftime('%A %d %B %Y')}</span>"
-            ),
-            font=dict(size=16),
-        ),
+        height=450,
+        images=images,
+        annotations=annotations,
         xaxis=dict(
             title="",
             tickangle=0,
@@ -579,6 +682,8 @@ def build_airgram_figure(
             categoryarray=time_labels,
             gridcolor="rgba(200,200,200,0.4)",
             showgrid=True,
+            side="top",
+            fixedrange=True,
         ),
         yaxis=dict(
             title="Altitude (m)",
@@ -586,10 +691,12 @@ def build_airgram_figure(
             dtick=500,
             gridcolor="rgba(200,200,200,0.4)",
             showgrid=True,
+            fixedrange=True,
         ),
         plot_bgcolor="white",
-        margin=dict(l=60, r=20, t=70, b=40),
+        margin=dict(l=50, r=16, t=yr_margin_t, b=6),
         showlegend=False,
+        dragmode=False,
     )
 
     return fig
