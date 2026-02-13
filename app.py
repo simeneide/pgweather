@@ -15,44 +15,94 @@ import pytz
 def update_session_and_query_parameters(**kwargs):
     """Update or initialize session and query parameters, allowing for overriding via kwargs."""
 
+    def _get_query_param(name):
+        value = st.query_params.get(name)
+        if isinstance(value, list):
+            return value[0] if value else None
+        return value
+
+    def _parse_selected_timestamp(value):
+        if not value:
+            return None
+        try:
+            parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+            return parsed.astimezone(datetime.timezone.utc)
+        except ValueError:
+            return None
+
     # Default values
     default_values = {
         "target_name": "Barten",
         "target_latitude": 61.2479,
         "target_longitude": 7.08998,
-        "selected_timestamp": datetime.datetime.now() + datetime.timedelta(hours=24),
+        "selected_timestamp": datetime.datetime.now(datetime.timezone.utc).replace(
+            minute=0, second=0, microsecond=0
+        )
+        + datetime.timedelta(hours=24),
         "altitude_max": 3500,
         "zoom": 6,  # Default zoom level
     }
 
     # Initialize or update session state with query parameters, defaults, or overrides from kwargs
     for key, default_value in default_values.items():
+        assigned = False
         if key in kwargs:
             st.session_state[key] = kwargs[key]
-        elif (key in st.query_params) & (key == "target_name"):
-            st.session_state[key] = st.query_params[key]
-        # elif (key in st.query_params) & (key == "selected_timestamp"):
-        #     # Convert the string to a datetime object
-        #     st.session_state[key] = datetime.datetime.fromisoformat(st.query_params[key])
-        #     print(st.session_state[key])
-        #     if key == "selected_timestamp":
-        #         st.session_state[key] = datetime.datetime.fromisoformat(st.query_params[key])
-        #     elif key == "altitude_max" or key == "zoom":
-        #         st.session_state[key] = int(st.query_params[key])
-        #     else:
-        #         st.session_state[key] = st.query_params[key]
-        elif key not in st.session_state:
+            assigned = True
+        elif key == "target_name":
+            query_value = _get_query_param("target_name")
+            if query_value:
+                st.session_state[key] = query_value
+                assigned = True
+        elif key == "selected_timestamp":
+            query_value = _parse_selected_timestamp(
+                _get_query_param("selected_timestamp")
+            )
+            if query_value:
+                st.session_state[key] = query_value
+                assigned = True
+        elif key in ["altitude_max", "zoom"]:
+            query_value = _get_query_param(key)
+            if query_value is not None:
+                try:
+                    st.session_state[key] = int(query_value)
+                    assigned = True
+                except ValueError:
+                    pass
+
+        if (not assigned) and (key not in st.session_state):
             st.session_state[key] = default_value
 
     # Update the streamlit query parameters from session state
     st.query_params.update(
         {
             "target_name": st.session_state.target_name,
-            # "selected_timestamp": st.session_state.selected_timestamp.isoformat(),
-            # "altitude_max": str(st.session_state.altitude_max),
-            # "zoom": str(st.session_state.zoom),  # Adding zoom to query params
+            "selected_timestamp": st.session_state.selected_timestamp.isoformat(),
+            "altitude_max": str(st.session_state.altitude_max),
+            "zoom": str(st.session_state.zoom),
         }
     )
+
+
+def align_selected_timestamp_to_data(df_forecast_detailed):
+    selected = st.session_state.get("selected_timestamp")
+    if selected is None:
+        return
+
+    if selected.tzinfo is None:
+        selected = selected.replace(tzinfo=datetime.timezone.utc)
+
+    available_times = df_forecast_detailed.get_column("time").unique().sort().to_list()
+    if not available_times:
+        return
+
+    if selected in available_times:
+        return
+
+    nearest = min(available_times, key=lambda t: abs((t - selected).total_seconds()))
+    st.session_state.selected_timestamp = nearest
 
 
 @st.cache_resource(ttl=3600)
@@ -87,10 +137,14 @@ def load_data(forecast_type="detailed"):
             [
                 pl.col("forecast_timestamp")
                 .cast(pl.Datetime)
-                .dt.replace_time_zone("UTC"),  # .dt.convert_time_zone("Europe/Brussels"),
+                .dt.replace_time_zone(
+                    "UTC"
+                ),  # .dt.convert_time_zone("Europe/Brussels"),
                 pl.col("time")
                 .cast(pl.Datetime)
-                .dt.replace_time_zone("UTC"),  # .dt.convert_time_zone("Europe/Brussels"),
+                .dt.replace_time_zone(
+                    "UTC"
+                ),  # .dt.convert_time_zone("Europe/Brussels"),
             ]
         )
 
@@ -129,7 +183,9 @@ def create_sounding(_subset, date, hour, lon, lat, altitude_max=3000):
         for i in range(T0.shape[1]):
             ax.plot(T_adiabatic[:, i], alts, "r:", alpha=0.5)
 
-    ax.plot(temperatures, altitudes, label=f"temp {pd.to_datetime(date).strftime('%H:%M')}")
+    ax.plot(
+        temperatures, altitudes, label=f"temp {pd.to_datetime(date).strftime('%H:%M')}"
+    )
 
     # Plot the temperature of the rising air parcel
     T_surface = temperatures[-1] + 3
@@ -146,7 +202,9 @@ def create_sounding(_subset, date, hour, lon, lat, altitude_max=3000):
 
     ax.set_xlabel("Temperature (°C)")
     ax.set_ylabel("Altitude (m)")
-    ax.set_title(f"Temperature Profile and Dry Adiabatic Lapse Rate for {date} {hour}:00")
+    ax.set_title(
+        f"Temperature Profile and Dry Adiabatic Lapse Rate for {date} {hour}:00"
+    )
     ax.legend(title="Time")
     xmin, xmax = temperatures.min() - 3, temperatures.max() + 3
     ax.set_xlim(xmin, xmax)
@@ -160,55 +218,53 @@ def date_controls(df_forecast_detailed):
     def get_forecast_days(df_forecast_detailed):
         start_stop_time = [
             df_forecast_detailed.get_column("time").min(),
-            df_forecast_detailed.get_column("time").max() - datetime.timedelta(hours=12),
+            df_forecast_detailed.get_column("time").max()
+            - datetime.timedelta(hours=12),
         ]
         today = datetime.datetime.now().date()
 
         # Generate available days within the dataset's time range
-        available_days = pd.date_range(start=start_stop_time[0], end=start_stop_time[1]).date
+        available_days = pd.date_range(
+            start=start_stop_time[0], end=start_stop_time[1]
+        ).date
         return available_days, today
 
-    available_days, today = get_forecast_days(df_forecast_detailed)
+    available_days, _ = get_forecast_days(df_forecast_detailed)
 
-    day_cols = st.columns(len(available_days))  # Create columns for each available day
-
-    for i, day in enumerate(available_days):
-        label = day.strftime("%A")  # Get day label
-        if day == today:
-            label += " (today)"
-        with day_cols[i]:  # Place each button in its respective column
-            if st.button(
-                label,
-                type="primary"
-                if day == st.session_state.selected_timestamp.date()
-                else "secondary",
-            ):
-                # Update selected_timestamp
-                # Keep current selected hour
-                selected_hour = st.session_state.selected_timestamp.hour
-                st.session_state.selected_timestamp = datetime.datetime.combine(
-                    day, datetime.time(selected_hour, 0)
-                )
-                st.rerun()
-
-    cet = pytz.timezone("CET")
+    cet = pytz.timezone("Europe/Oslo")
     utc = pytz.timezone("UTC")
-    selected_time_cet = (
-        st.session_state.get("selected_timestamp").replace(tzinfo=utc).astimezone(cet)
+    selected_timestamp = st.session_state.get("selected_timestamp")
+    if selected_timestamp.tzinfo is None:
+        selected_timestamp = selected_timestamp.replace(tzinfo=utc)
+    selected_time_cet = selected_timestamp.astimezone(cet)
+
+    selected_day = st.selectbox(
+        "Day",
+        options=available_days,
+        index=max(0, list(available_days).index(selected_time_cet.date()))
+        if selected_time_cet.date() in available_days
+        else 0,
+        format_func=lambda day: day.strftime("%a %d %b"),
     )
 
+    quick_cols = st.columns(3)
+    quick_hours = {"Morning": 9, "Noon": 12, "Evening": 18}
+    selected_hour = selected_time_cet.hour
+    for idx, label in enumerate(quick_hours):
+        with quick_cols[idx]:
+            if st.button(label, use_container_width=True):
+                selected_hour = quick_hours[label]
+
     selected_hour = st.slider(
-        "Select Hour",
+        "Hour (local)",
         min_value=0,
         max_value=23,
-        value=selected_time_cet.hour,
+        value=selected_hour,
         format="%02d:00",
     )
 
     cet_time = cet.localize(
-        datetime.datetime.combine(
-            st.session_state.selected_timestamp.date(), datetime.time(selected_hour, 0)
-        )
+        datetime.datetime.combine(selected_day, datetime.time(selected_hour, 0))
     )
 
     # Convert it to UTC
@@ -230,6 +286,7 @@ def build_map(
     selected_lat=None,
     selected_lon=None,
     selected_timestamp=None,
+    show_area=True,
     show_detailed=True,
 ):
     """
@@ -261,24 +318,26 @@ def build_map(
         (1.0, "black"),  # 5k
     ]
 
-    area_map = go.Choroplethmap(
-        geojson=areas,
-        zmin=0,
-        zmax=5000,
-        featureidkey="properties.name",
-        locations=name_values,
-        ids=name_values,
-        z=thermal_top_area_values,
-        colorscale=thermal_colorscale,
-        showscale=True,
-        hovertext=[
-            f"{name} \n Thermal Height (median for area): {ht} m"
-            for ht, name in zip(thermal_top_area_values, name_values)
-        ],
-        marker_opacity=0.3,
-    )
-
-    fig = go.Figure(area_map)
+    fig = go.Figure()
+    if show_area:
+        area_map = go.Choroplethmap(
+            geojson=areas,
+            zmin=0,
+            zmax=5000,
+            featureidkey="properties.name",
+            locations=name_values,
+            ids=name_values,
+            z=thermal_top_area_values,
+            colorscale=thermal_colorscale,
+            showscale=True,
+            hovertext=[
+                f"{name} | median thermal top: {ht} m"
+                for ht, name in zip(thermal_top_area_values, name_values)
+            ],
+            marker_opacity=0.35,
+            colorbar=dict(title="Thermal top (m)"),
+        )
+        fig.add_trace(area_map)
     ## BUILD DETAILED MAP
     if show_detailed:
         subset = df_forecast_detailed.filter(
@@ -291,7 +350,9 @@ def build_map(
         name_values = subset.get_column("name").to_numpy()
 
         # Determine whether a point is selected
-        selected_points = (latitude_values == selected_lat) & (longitude_values == selected_lon)
+        selected_points = (latitude_values == selected_lat) & (
+            longitude_values == selected_lon
+        )
 
         # Use conditional logic to define marker properties
         marker_size = np.where(selected_points, 20, 9)  # Larger size for selected point
@@ -313,7 +374,7 @@ def build_map(
             ),
             ids=name_values,
             text=[
-                f"{name} - Thermal Height: {ht} m"
+                f"{name} | thermal top: {ht} m"
                 for ht, name in zip(thermal_top_values, name_values)
             ],
             hoverinfo="text",
@@ -323,7 +384,9 @@ def build_map(
 
     fig.update_layout(
         map_style="open-street-map",
-        map=dict(center=dict(lat=selected_lat, lon=selected_lon), zoom=st.session_state.zoom),
+        map=dict(
+            center=dict(lat=selected_lat, lon=selected_lon), zoom=st.session_state.zoom
+        ),
         margin={"r": 0, "t": 0, "l": 0, "b": 0},
     )
     return fig
@@ -392,7 +455,9 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, target_name, dat
         output_frame.join_asof(
             location_data.sort("altitude"), on="altitude", by="time", strategy="nearest"
         )
-        .with_columns(wind_direction=-pl.arctan2("y_wind_ml", "x_wind_ml").degrees() + 90)
+        .with_columns(
+            wind_direction=-pl.arctan2("y_wind_ml", "x_wind_ml").degrees() + 90
+        )
         .sort("time")
     )
     fig = make_subplots(
@@ -401,7 +466,10 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, target_name, dat
         shared_xaxes=True,
         row_heights=[0.3, 0.7],
         vertical_spacing=0.05,
-        subplot_titles=("Wind Speed and Direction [m/s]", "Thermal Temperature Difference [°C]"),
+        subplot_titles=(
+            "Wind Speed and Direction [m/s]",
+            "Thermal Temperature Difference [°C]",
+        ),
     )
 
     ## WIND PLOT
@@ -449,7 +517,8 @@ def create_daily_thermal_and_wind_airgram(df_forecast_detailed, target_name, dat
             y=plot_frame_wind.select("altitude").to_numpy().squeeze(),
             mode="text",
             text=[
-                f"{spd:.1f}" for spd in plot_frame_wind.select("wind_speed").to_numpy().squeeze()
+                f"{spd:.1f}"
+                for spd in plot_frame_wind.select("wind_speed").to_numpy().squeeze()
             ],
             textposition="middle right",
             textfont=dict(color="black", size=11, family="Arial"),
@@ -524,9 +593,37 @@ def main():
     df_forecast_detailed = load_data("detailed")
     st.title("Termikkvarsel")
 
-    update_session_and_query_parameters()
+    latest_ts = df_forecast_detailed.get_column("forecast_timestamp").max()
+    age_hours = (
+        datetime.datetime.now(datetime.timezone.utc) - latest_ts
+    ).total_seconds() / 3600
+    if age_hours > 8:
+        st.warning(
+            f"Forecast last updated {latest_ts} UTC ({age_hours:.1f} hours ago).",
+            icon="⏱️",
+        )
+    else:
+        st.caption(f"Forecast updated {latest_ts} UTC ({age_hours:.1f} hours ago)")
 
-    date_controls(df_forecast_detailed)
+    update_session_and_query_parameters()
+    align_selected_timestamp_to_data(df_forecast_detailed)
+
+    with st.sidebar:
+        st.subheader("Controls")
+        st.session_state.zoom = st.slider("Map zoom", 4, 10, st.session_state.zoom)
+        map_layer = st.radio(
+            "Map layers",
+            options=["Both", "Takeoffs", "Areas"],
+            horizontal=False,
+        )
+        st.session_state.altitude_max = st.number_input(
+            "Max altitude (m)",
+            0,
+            4000,
+            st.session_state.altitude_max,
+            step=500,
+        )
+        date_controls(df_forecast_detailed)
 
     with st.expander("Map", expanded=True):
         map_fig = build_map(
@@ -534,17 +631,16 @@ def main():
             selected_lat=st.session_state.target_latitude,
             selected_lon=st.session_state.target_longitude,
             selected_timestamp=st.session_state.selected_timestamp,
+            show_area=map_layer in ["Both", "Areas"],
+            show_detailed=map_layer in ["Both", "Takeoffs"],
         )
 
         def a_callback():
-            print("run callback..")
-            # print(st.session_state.get("map_selection"))
             selected_points = (
                 st.session_state.get("map_selection").get("selection").get("points", [])
             )
             if len(selected_points) > 0:
                 point = selected_points[0]
-                print(point)
                 if point.get("ct"):
                     point["lon"] = point.get("ct")[0]
                     point["lat"] = point.get("ct")[1]
@@ -554,7 +650,6 @@ def main():
                     target_longitude=point["lon"],
                     target_name=point["name"],
                 )
-                print(f"Selected point: {point['lat']}, {point['lon']}")
 
         st.plotly_chart(
             map_fig,
@@ -562,6 +657,24 @@ def main():
             use_container_width=True,
             config={"scrollZoom": True, "displayModeBar": False},
             on_select=a_callback,
+        )
+
+    selected_row = (
+        df_forecast_detailed.filter(
+            (pl.col("point_type") != "area")
+            & (pl.col("name") == st.session_state.target_name)
+            & (pl.col("time") == st.session_state.selected_timestamp)
+            & (pl.col("altitude") <= 1000)
+        )
+        .sort("altitude", descending=True)
+        .head(1)
+    )
+    if len(selected_row) > 0:
+        st.info(
+            f"Selected: {selected_row[0, 'name']} | Time: {st.session_state.selected_timestamp} UTC | "
+            f"Thermal top: {selected_row[0, 'thermal_top']:.0f} m | "
+            f"Wind: {selected_row[0, 'wind_speed']:.1f} m/s",
+            icon="🪂",
         )
 
     if st.session_state.target_name is not None:
@@ -573,11 +686,9 @@ def main():
 
         st.plotly_chart(
             wind_fig,
+            use_container_width=True,
             config={"scrollZoom": False, "displayModeBar": False, "staticPlot": False},
         )
-
-    with st.expander("More settings", expanded=False):
-        st.session_state.altitude_max = st.number_input("Max altitude", 0, 4000, 3000, step=500)
 
     st.markdown(
         f""" \

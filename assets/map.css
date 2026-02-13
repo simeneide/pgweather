@@ -1,0 +1,81 @@
+.maplibregl-ctrl-attrib-button,
+.mapboxgl-ctrl-attrib-button {
+  display: none !important;
+}
+
+.maplibregl-ctrl-attrib,
+.mapboxgl-ctrl-attrib {
+  padding: 0 6px !important;
+  background: rgba(255, 255, 255, 0.8) !important;
+  font-size: 10px !important;
+}
+
+.maplibregl-ctrl-attrib .maplibregl-ctrl-attrib-inner,
+.mapboxgl-ctrl-attrib .mapboxgl-ctrl-attrib-inner {
+  display: block !important;
+  font-size: 10px !important;
+}
+
+/* Pill-style radio buttons for date/time picker */
+.pill-radio {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pill-radio .dash-options-list-option {
+  display: inline-flex !important;
+  align-items: center;
+  padding: 5px 14px;
+  border: 1px solid #c0c8d4;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  background: #fff;
+  color: #333;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  user-select: none;
+  line-height: 1.4;
+  margin: 0;
+}
+.pill-radio .dash-options-list-option:hover {
+  border-color: #93a3b8;
+  background: #f0f4f8;
+}
+/* Hide the actual radio circle */
+.pill-radio .dash-options-list-option-wrapper {
+  display: none !important;
+}
+/* Active/selected pill */
+.pill-radio .dash-options-list-option.selected {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+  font-weight: 700;
+}
+.pill-radio .dash-options-list-option.selected:hover {
+  background: #2563eb;
+}
+
+/* Smaller variant for time slots */
+.pill-radio-sm .dash-options-list-option {
+  padding: 3px 10px;
+  font-size: 13px;
+  min-width: 50px;
+  justify-content: center;
+}
+
+/* Fix location dropdown: search bar stuck in middle of list */
+.dash-dropdown-content {
+  max-height: min(360px, 60vh) !important;
+}
+.dash-dropdown-search-container {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 10 !important;
+  background: #fff !important;
+  padding-bottom: 4px;
+}
+.dash-dropdown-options {
+  overflow: visible !important;
+}

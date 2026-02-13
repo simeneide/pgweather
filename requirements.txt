@@ -25,3 +25,6 @@ geojson
 pytz
 nbformat
 anywidget
+fastapi
+uvicorn
+dash

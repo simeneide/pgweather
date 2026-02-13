@@ -21,4 +21,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "streamlit run app.py --server.address 0.0.0.0 --server.port ${PORT:-8080} --server.headless true --browser.gatherUsageStats false --server.enableCORS false --server.enableXsrfProtection false"]
+CMD ["sh", "-c", "uvicorn src.web.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
