@@ -543,7 +543,7 @@ def build_airgram_figure(
     available_alts = np.array(sorted(plot_frame["altitude"].unique().to_list()))
     above_ground = available_alts[available_alts >= elevation]
     if len(above_ground) > 0:
-        target_alts = np.arange(above_ground[0], float(altitude_max) + 1, 500)
+        target_alts = np.arange(above_ground[0], float(altitude_max) + 1, 250)
         # Snap each target to the nearest altitude in the data grid
         wind_altitudes = np.unique(
             [above_ground[np.argmin(np.abs(above_ground - t))] for t in target_alts]
@@ -560,40 +560,28 @@ def build_airgram_figure(
         wind_dirs = plot_frame_wind["wind_direction"].to_numpy()
         wind_spds = plot_frame_wind["wind_speed"].to_numpy()
 
-        # Arrow markers
+        # Arrow markers with speed labels
         fig.add_trace(
             go.Scatter(
                 x=wind_time_labels,
                 y=wind_alts,
-                mode="markers",
+                mode="markers+text",
                 marker=dict(
                     symbol="arrow",
-                    size=14,
+                    size=12,
                     angle=wind_dirs,
                     color=[_wind_arrow_color(float(s)) for s in wind_spds],
                     line=dict(width=0.5, color="rgba(0,0,0,0.3)"),
                 ),
+                text=[f"{spd:.0f}" for spd in wind_spds],
+                textposition="middle right",
+                textfont=dict(size=9, color="#555", family="Arial"),
                 hoverinfo="text",
-                text=[
+                hovertext=[
                     f"Alt: {alt:.0f}m | {spd:.0f} m/s | {angle:.0f}°"
                     for alt, spd, angle in zip(wind_alts, wind_spds, wind_dirs)
                 ],
                 showlegend=False,
-                cliponaxis=False,
-            )
-        )
-
-        # Wind speed text labels next to arrows
-        fig.add_trace(
-            go.Scatter(
-                x=wind_time_labels,
-                y=wind_alts,
-                mode="text",
-                text=[f"{spd:.0f}" for spd in wind_spds],
-                textposition="middle right",
-                textfont=dict(size=10, color="#333", family="Arial"),
-                showlegend=False,
-                hoverinfo="skip",
                 cliponaxis=False,
             )
         )
@@ -619,6 +607,8 @@ def build_airgram_figure(
             x_frac = (i + 0.5) / n_cols
 
             # Weather icon above the hour labels
+            icon_size = 1.0 / n_cols  # scale to column width
+            icon_size = min(icon_size, 0.07)  # cap on wide screens
             images.append(
                 dict(
                     source=e["icon_png_url"],
@@ -628,8 +618,8 @@ def build_airgram_figure(
                     yref="paper",
                     xanchor="center",
                     yanchor="bottom",
-                    sizex=0.07,
-                    sizey=0.07,
+                    sizex=icon_size,
+                    sizey=icon_size,
                     sizing="contain",
                     layer="above",
                 )
@@ -684,17 +674,21 @@ def build_airgram_figure(
             showgrid=True,
             side="top",
             fixedrange=True,
+            tickfont=dict(size=11),
         ),
         yaxis=dict(
-            title="Altitude (m)",
+            title="",
             range=[0, altitude_max],
             dtick=500,
             gridcolor="rgba(200,200,200,0.4)",
             showgrid=True,
             fixedrange=True,
+            tickfont=dict(size=10),
+            ticksuffix="m",
         ),
         plot_bgcolor="white",
-        margin=dict(l=50, r=16, t=yr_margin_t, b=6),
+        autosize=True,
+        margin=dict(l=46, r=10, t=yr_margin_t, b=6),
         showlegend=False,
         dragmode=False,
     )

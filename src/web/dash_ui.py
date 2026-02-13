@@ -50,6 +50,7 @@ def _day_label(iso_date: str) -> str:
 def create_dash_app() -> Dash:
     app = Dash(
         __name__,
+        title="\U0001fa82 Termikkvarselet",
         requests_pathname_prefix="/",
         suppress_callback_exceptions=True,
         assets_folder=str(_PROJECT_ROOT / "assets"),
@@ -93,7 +94,7 @@ def create_dash_app() -> Dash:
             # Stores
             dcc.Store(id="days-map-store", data=days_map_serialized),
             dcc.Store(id="selected-time-store", data=default_time_iso),
-            html.H1("Termikkvarsel"),
+            html.H1("\U0001fa82 Termikkvarselet"),
             html.Div(
                 [
                     # Day selector (RadioItems styled as pill buttons)
@@ -186,6 +187,7 @@ def create_dash_app() -> Dash:
                     "displayModeBar": False,
                     "scrollZoom": False,
                     "doubleClick": False,
+                    "responsive": True,
                 },
                 style={"marginTop": "6px"},
             ),
@@ -201,23 +203,38 @@ def create_dash_app() -> Dash:
             # Attribution footer
             html.Footer(
                 [
-                    html.Span("Data: "),
-                    html.A(
-                        "MET Norway / MEPS",
-                        href="https://www.met.no/",
-                        target="_blank",
+                    html.Div(
+                        [
+                            html.Span("Hosted and maintained by "),
+                            html.A(
+                                "eide.ai",
+                                href="https://eide.ai",
+                                target="_blank",
+                            ),
+                        ],
                     ),
-                    html.Span(" | Weather symbols: "),
-                    html.A(
-                        "Yr",
-                        href="https://www.yr.no/",
-                        target="_blank",
-                    ),
-                    html.Span(" | Map: "),
-                    html.A(
-                        "OpenStreetMap",
-                        href="https://www.openstreetmap.org/copyright",
-                        target="_blank",
+                    html.Div(
+                        [
+                            html.Span("Data: "),
+                            html.A(
+                                "MET Norway / MEPS",
+                                href="https://www.met.no/",
+                                target="_blank",
+                            ),
+                            html.Span(" | Weather symbols: "),
+                            html.A(
+                                "Yr",
+                                href="https://www.yr.no/",
+                                target="_blank",
+                            ),
+                            html.Span(" | Map: "),
+                            html.A(
+                                "OpenStreetMap",
+                                href="https://www.openstreetmap.org/copyright",
+                                target="_blank",
+                            ),
+                        ],
+                        style={"marginTop": "4px"},
                     ),
                 ],
                 style={
