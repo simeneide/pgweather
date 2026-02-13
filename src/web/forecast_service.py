@@ -2,20 +2,118 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import plotly.graph_objects as go
 import polars as pl
-from matplotlib.colors import LinearSegmentedColormap, to_hex
-from plotly.subplots import make_subplots
+import requests
+
 
 import db_utils
 
+logger = logging.getLogger(__name__)
 
 DATA_TTL_SECONDS = 600
 _CACHE: dict[str, object] = {"loaded_at": None, "df": None}
+
+# ---------------------------------------------------------------------------
+# Yr / MET Norway locationforecast
+# ---------------------------------------------------------------------------
+_YR_CACHE: dict[str, object] = {}  # key=(lat,lon) -> {"fetched_at": dt, "data": [...]}
+_YR_TTL_SECONDS = 1800  # 30 min cache per location
+_YR_ICON_BASE = "https://raw.githubusercontent.com/metno/weathericons/main/weather/svg"
+_YR_USER_AGENT = "pgweather/1.0 github.com/simeneide/pgweather"
+
+
+def _fetch_yr_forecast(lat: float, lon: float) -> list[dict]:
+    """Fetch compact locationforecast from MET Norway and return hourly entries."""
+    cache_key = f"{lat:.4f},{lon:.4f}"
+    now = dt.datetime.now(dt.timezone.utc)
+    cached = _YR_CACHE.get(cache_key)
+    if (
+        cached
+        and isinstance(cached.get("fetched_at"), dt.datetime)
+        and (now - cached["fetched_at"]).total_seconds() < _YR_TTL_SECONDS
+    ):
+        return cached["data"]
+
+    url = (
+        f"https://api.met.no/weatherapi/locationforecast/2.0/compact"
+        f"?lat={lat:.4f}&lon={lon:.4f}"
+    )
+    try:
+        resp = requests.get(url, headers={"User-Agent": _YR_USER_AGENT}, timeout=10)
+        resp.raise_for_status()
+        timeseries = resp.json()["properties"]["timeseries"]
+    except Exception:
+        logger.exception("Failed to fetch Yr forecast for %s,%s", lat, lon)
+        if cached:
+            return cached["data"]
+        return []
+
+    entries: list[dict] = []
+    for ts in timeseries:
+        time_utc = dt.datetime.fromisoformat(ts["time"].replace("Z", "+00:00"))
+        instant = ts["data"]["instant"]["details"]
+        next1 = ts["data"].get("next_1_hours", {})
+        symbol = next1.get("summary", {}).get("symbol_code", "")
+        precip = next1.get("details", {}).get("precipitation_amount")
+        entries.append(
+            {
+                "time": time_utc,
+                "symbol_code": symbol,
+                "air_temperature": instant.get("air_temperature"),
+                "precipitation": precip,
+                "wind_speed": instant.get("wind_speed"),
+                "cloud_area_fraction": instant.get("cloud_area_fraction"),
+            }
+        )
+
+    _YR_CACHE[cache_key] = {"fetched_at": now, "data": entries}
+    return entries
+
+
+def get_yr_weather_for_day(
+    name: str, day: dt.date, df: Optional[pl.DataFrame] = None
+) -> list[dict]:
+    """Return Yr hourly weather for *name* on *day* (local time), 07-21h."""
+    from zoneinfo import ZoneInfo
+
+    local_tz = ZoneInfo("Europe/Oslo")
+    frame = df if df is not None else load_forecast_data()
+
+    # Look up lat/lon for this takeoff
+    loc = (
+        frame.filter((pl.col("point_type") != "area") & (pl.col("name") == name))
+        .select("latitude", "longitude")
+        .unique()
+        .head(1)
+    )
+    if len(loc) == 0:
+        return []
+    lat = float(loc[0, "latitude"])
+    lon = float(loc[0, "longitude"])
+
+    entries = _fetch_yr_forecast(lat, lon)
+    if not entries:
+        return []
+
+    # Filter to the requested local day, 07-21h
+    result = []
+    for e in entries:
+        local_time = e["time"].astimezone(local_tz)
+        if local_time.date() == day and 7 <= local_time.hour <= 21 and e["symbol_code"]:
+            result.append(
+                {
+                    **e,
+                    "local_hour": local_time.hour,
+                    "icon_url": f"{_YR_ICON_BASE}/{e['symbol_code']}.svg",
+                }
+            )
+    return result
 
 
 def _interpolate_color(
@@ -267,6 +365,37 @@ def build_map_figure(
     return fig
 
 
+def _wind_arrow_color(
+    wind_speed: float,
+    thresholds: tuple[float, ...] = (2, 4, 6, 8, 12),
+    colors: tuple[str, ...] = (
+        "#b0b0b0",  # calm – grey
+        "#4caf50",  # light – green
+        "#ffeb3b",  # moderate – yellow
+        "#ff9800",  # fresh – orange
+        "#f44336",  # strong – red
+        "#4a148c",  # very strong – dark purple
+    ),
+) -> str:
+    """Map wind speed to an arrow colour (discrete buckets)."""
+    for i, thr in enumerate(thresholds):
+        if wind_speed < thr:
+            return colors[i]
+    return colors[-1]
+
+
+# Thermal colorscale: grey -> yellow -> orange (mimics meteo-parapente)
+_THERMAL_COLORSCALE = [
+    [0.0, "rgba(220,220,220,0.0)"],  # zero diff – transparent
+    [0.05, "rgba(255,255,200,0.3)"],  # very slight – faint yellow
+    [0.15, "rgba(255,255,100,0.6)"],  # weak thermal – yellow
+    [0.30, "rgba(255,220,50,0.8)"],  # moderate – golden
+    [0.50, "rgba(255,180,30,0.9)"],  # good thermal – orange-yellow
+    [0.70, "rgba(255,140,0,0.95)"],  # strong – orange
+    [1.0, "rgba(255,80,0,1.0)"],  # very strong – deep orange
+]
+
+
 def build_airgram_figure(
     target_name: str,
     selected_date: dt.date,
@@ -298,9 +427,12 @@ def build_airgram_figure(
         fig.update_layout(height=500)
         return fig
 
+    # Determine ground elevation for this location
+    elevation = float(location_data["elevation"].min())
+
     new_timestamps = location_data.select("time").to_series().unique().sort().to_list()
+    # Use 200m steps for denser grid (like meteo-parapente)
     altitudes = np.arange(0.0, float(altitude_max) + 200.0, 200)
-    altitudes = altitudes[altitudes >= float(location_data["altitude"].min())]
 
     output_frame = (
         pl.DataFrame({"time": [new_timestamps], "altitude": [altitudes]})
@@ -319,77 +451,147 @@ def build_airgram_figure(
         .sort("time")
     )
 
-    fig = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        row_heights=[0.3, 0.7],
-        vertical_spacing=0.05,
-        subplot_titles=(
-            "Wind Speed and Direction [m/s]",
-            "Thermal Temperature Difference [deg C]",
-        ),
+    fig = go.Figure()
+
+    # --- 1) Thermal heatmap (background) ---
+    # Pivot thermal data into a 2D grid for the heatmap
+    thermal_pivot = plot_frame.pivot(
+        on="time", index="altitude", values="thermal_temp_diff"
+    ).sort("altitude")
+    z_altitudes = thermal_pivot["altitude"].to_numpy()
+    z_times = [c for c in thermal_pivot.columns if c != "altitude"]
+    z_matrix = thermal_pivot.select(z_times).to_numpy()
+
+    # Format time labels as "HHh"
+    time_labels = []
+    for t in new_timestamps:
+        if hasattr(t, "strftime"):
+            time_labels.append(t.strftime("%Hh"))
+        else:
+            time_labels.append(str(t))
+
+    fig.add_trace(
+        go.Heatmap(
+            z=z_matrix,
+            x=time_labels,
+            y=z_altitudes,
+            colorscale=_THERMAL_COLORSCALE,
+            zmin=0,
+            zmax=6,
+            showscale=False,
+            hovertemplate=(
+                "Alt: %{y:.0f}m<br>Time: %{x}<br>"
+                "Thermal diff: %{z:.1f}°C<extra></extra>"
+            ),
+        )
     )
 
-    wind_altitudes = np.arange(200.0, float(altitude_max) + 200.0, 400)
+    # --- 2) Ground shading (grey area below terrain) ---
+    fig.add_shape(
+        type="rect",
+        x0=time_labels[0],
+        x1=time_labels[-1],
+        y0=0,
+        y1=elevation,
+        fillcolor="rgba(180,180,180,0.7)",
+        line=dict(width=0),
+        layer="above",
+    )
+
+    # --- 3) Wind arrows with speed labels (overlaid) ---
+    # Use every 250m for wind arrows to get a dense grid like the reference
+    wind_step = 250
+    wind_altitudes = np.arange(
+        max(wind_step, np.ceil(elevation / wind_step) * wind_step),
+        float(altitude_max) + wind_step,
+        wind_step,
+    )
     plot_frame_wind = plot_frame.sort("time", "altitude").filter(
         pl.col("altitude").is_in(wind_altitudes)
     )
 
-    fig.add_trace(
-        go.Scatter(
-            x=plot_frame_wind.select("time").to_series().to_list(),
-            y=plot_frame_wind.select("altitude").to_numpy().squeeze(),
-            mode="markers",
-            marker=dict(
-                symbol="arrow",
-                size=18,
-                angle=plot_frame_wind.select("wind_direction").to_numpy().squeeze(),
-                color=[
-                    _interpolate_color(float(s))
-                    for s in plot_frame_wind.select("wind_speed").to_numpy().squeeze()
+    if len(plot_frame_wind) > 0:
+        wind_times_raw = plot_frame_wind["time"].to_list()
+        wind_time_labels = []
+        for t in wind_times_raw:
+            if hasattr(t, "strftime"):
+                wind_time_labels.append(t.strftime("%Hh"))
+            else:
+                wind_time_labels.append(str(t))
+        wind_alts = plot_frame_wind["altitude"].to_numpy()
+        wind_dirs = plot_frame_wind["wind_direction"].to_numpy()
+        wind_spds = plot_frame_wind["wind_speed"].to_numpy()
+
+        # Arrow markers
+        fig.add_trace(
+            go.Scatter(
+                x=wind_time_labels,
+                y=wind_alts,
+                mode="markers",
+                marker=dict(
+                    symbol="arrow",
+                    size=14,
+                    angle=wind_dirs,
+                    color=[_wind_arrow_color(float(s)) for s in wind_spds],
+                    line=dict(width=0.5, color="rgba(0,0,0,0.3)"),
+                ),
+                hoverinfo="text",
+                text=[
+                    f"Alt: {alt:.0f}m | {spd:.0f} m/s | {angle:.0f}°"
+                    for alt, spd, angle in zip(wind_alts, wind_spds, wind_dirs)
                 ],
-                showscale=False,
-            ),
-            hoverinfo="text",
-            text=[
-                f"Alt: {alt:.0f} m, Speed: {spd:.1f} m/s, Direction: {angle:.0f} deg"
-                for alt, spd, angle in zip(
-                    plot_frame_wind.select("altitude").to_numpy().squeeze(),
-                    plot_frame_wind.select("wind_speed").to_numpy().squeeze(),
-                    plot_frame_wind.select("wind_direction").to_numpy().squeeze(),
-                )
-            ],
-            showlegend=False,
-        ),
-        row=1,
-        col=1,
-    )
+                showlegend=False,
+                cliponaxis=False,
+            )
+        )
 
-    fig.add_trace(
-        go.Heatmap(
-            z=plot_frame.select("thermal_temp_diff").to_numpy().squeeze(),
-            x=plot_frame.select("time").to_series().to_list(),
-            y=plot_frame.select("altitude").to_numpy().squeeze(),
-            colorscale="YlGn",
-            showscale=False,
-            zmin=0,
-            zmax=8,
-        ),
-        row=2,
-        col=1,
-    )
+        # Wind speed text labels next to arrows
+        fig.add_trace(
+            go.Scatter(
+                x=wind_time_labels,
+                y=wind_alts,
+                mode="text",
+                text=[f"{spd:.0f}" for spd in wind_spds],
+                textposition="middle right",
+                textfont=dict(size=10, color="#333", family="Arial"),
+                showlegend=False,
+                hoverinfo="skip",
+                cliponaxis=False,
+            )
+        )
 
+    # --- Layout ---
     fig.update_layout(
-        height=760,
-        title=(
-            f"Airgram for {target_name} on "
-            f"{selected_date.strftime('%A')} {selected_date.strftime('%Y-%m-%d')}"
+        height=700,
+        title=dict(
+            text=(
+                f"Windgram – {target_name}<br>"
+                f"<span style='font-size:13px;color:#666'>"
+                f"{selected_date.strftime('%A %d %B %Y')}</span>"
+            ),
+            font=dict(size=16),
         ),
-        yaxis=dict(title="Altitude (m)"),
-        xaxis2=dict(title="Time", tickangle=-45),
-        yaxis2=dict(title="Altitude (m)", range=[0, altitude_max]),
+        xaxis=dict(
+            title="",
+            tickangle=0,
+            type="category",
+            categoryorder="array",
+            categoryarray=time_labels,
+            gridcolor="rgba(200,200,200,0.4)",
+            showgrid=True,
+        ),
+        yaxis=dict(
+            title="Altitude (m)",
+            range=[0, altitude_max],
+            dtick=500,
+            gridcolor="rgba(200,200,200,0.4)",
+            showgrid=True,
+        ),
+        plot_bgcolor="white",
+        margin=dict(l=60, r=20, t=70, b=40),
+        showlegend=False,
     )
+
     return fig
 
 

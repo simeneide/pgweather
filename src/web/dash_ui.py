@@ -51,6 +51,85 @@ def _time_label(utc_time: dt.datetime) -> str:
     return _to_local(utc_time).strftime("%H:%M")
 
 
+def _build_yr_strip(name: str, day: dt.date, selected_hour: int, df=None) -> html.Div:
+    """Build a horizontal weather strip with Yr icons, temp, and precip."""
+    entries = forecast_service.get_yr_weather_for_day(name, day, df)
+    if not entries:
+        return html.Div(
+            "Weather symbols unavailable",
+            style={"color": "#999", "fontSize": "13px"},
+        )
+
+    cells = []
+    for e in entries:
+        hour = e["local_hour"]
+        is_selected = hour == selected_hour
+        temp = e.get("air_temperature")
+        precip = e.get("precipitation")
+        temp_str = f"{temp:.0f}°" if temp is not None else ""
+        precip_str = f"{precip:.1f}" if precip and precip > 0 else ""
+
+        cell_style = {
+            "display": "flex",
+            "flexDirection": "column",
+            "alignItems": "center",
+            "padding": "2px 4px",
+            "minWidth": "42px",
+            "borderRadius": "6px",
+            "fontSize": "12px",
+            "lineHeight": "1.3",
+        }
+        if is_selected:
+            cell_style["background"] = "#e0edff"
+            cell_style["fontWeight"] = 700
+
+        cells.append(
+            html.Div(
+                [
+                    html.Div(
+                        f"{hour:02d}", style={"color": "#666", "fontSize": "11px"}
+                    ),
+                    html.Img(
+                        src=e["icon_url"],
+                        style={"width": "28px", "height": "28px"},
+                    ),
+                    html.Div(temp_str, style={"fontWeight": 600}),
+                    html.Div(
+                        precip_str,
+                        style={"color": "#3b82f6", "fontSize": "11px"},
+                    )
+                    if precip_str
+                    else None,
+                ],
+                style=cell_style,
+            )
+        )
+
+    return html.Div(
+        [
+            html.Div(
+                cells,
+                style={
+                    "display": "flex",
+                    "gap": "2px",
+                    "overflowX": "auto",
+                    "padding": "6px 4px",
+                },
+            ),
+            html.Div(
+                "Weather from Yr (MET Norway)",
+                style={"fontSize": "10px", "color": "#999", "paddingLeft": "4px"},
+            ),
+        ],
+        style={
+            "background": "#f8fafc",
+            "border": "1px solid #e2e8f0",
+            "borderRadius": "8px",
+            "padding": "4px",
+        },
+    )
+
+
 def create_dash_app() -> Dash:
     app = Dash(
         __name__,
@@ -207,6 +286,8 @@ def create_dash_app() -> Dash:
                     "fontSize": "14px",
                 },
             ),
+            # Yr weather strip
+            html.Div(id="yr-weather-strip", style={"margin": "0 0 14px 0"}),
             dcc.Graph(id="airgram-graph", config={"displayModeBar": False}),
         ],
         style={"maxWidth": "1200px", "margin": "0 auto", "padding": "16px"},
@@ -289,6 +370,7 @@ def create_dash_app() -> Dash:
         Output("map-graph", "figure"),
         Output("airgram-graph", "figure"),
         Output("summary-text", "children"),
+        Output("yr-weather-strip", "children"),
         Input("time-radio", "value"),
         Input("location-dropdown", "value"),
         Input("layer-radio", "value"),
@@ -330,7 +412,13 @@ def create_dash_app() -> Dash:
             f"{_to_local(latest_ts).strftime('%Y-%m-%d %H:%M')}"
             f" local ({age_hours:.1f}h ago)"
         )
-        return map_fig, airgram_fig, merged
+
+        # Build Yr weather strip
+        yr_strip = _build_yr_strip(
+            selected_name, selected_time_local.date(), selected_time_local.hour, df_now
+        )
+
+        return map_fig, airgram_fig, merged, yr_strip
 
     # -----------------------------------------------------------------------
     # Click map -> select location
