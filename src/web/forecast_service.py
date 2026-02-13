@@ -518,11 +518,39 @@ def build_airgram_figure(
             colorscale=_THERMAL_COLORSCALE,
             zmin=0,
             zmax=6,
+            zsmooth=False,
             showscale=False,
             hovertemplate=(
                 "Alt: %{y:.0f}m<br>Time: %{x}<br>"
                 "Thermal diff: %{z:.1f}°C<extra></extra>"
             ),
+        )
+    )
+
+    # --- 1b) Thermal top line ---
+    # Show computed thermal top as a dashed line so boundary is clear
+    thermal_tops_per_time = (
+        plot_frame.group_by("time_label")
+        .agg(pl.col("thermal_top").first())
+        .sort(
+            pl.col("time_label").map_elements(
+                lambda lbl: time_labels.index(lbl) if lbl in time_labels else 999,
+                return_dtype=pl.Int64,
+            )
+        )
+    )
+    tt_labels = thermal_tops_per_time["time_label"].to_list()
+    tt_vals = thermal_tops_per_time["thermal_top"].to_numpy()
+    # Only show line where thermal top is above ground
+    tt_y = [float(v) if v > elevation + 50 else None for v in tt_vals]
+    fig.add_trace(
+        go.Scatter(
+            x=tt_labels,
+            y=tt_y,
+            mode="lines",
+            line=dict(color="rgba(180,80,0,0.7)", width=2, dash="dot"),
+            hovertemplate="Thermal top: %{y:.0f}m<extra></extra>",
+            showlegend=False,
         )
     )
 
