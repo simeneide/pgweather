@@ -17,3 +17,11 @@ siphon
 netcdf4
 scipy
 bottleneck
+polars
+dotenv
+adbc-driver-manager
+adbc-driver-postgresql
+geojson
+pytz
+nbformat
+anywidget

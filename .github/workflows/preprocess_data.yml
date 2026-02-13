@@ -1,7 +1,8 @@
 name: preprocess_data
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "20 */3 * * *"
   push:
     branches:
       - main
@@ -20,10 +21,7 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run data fetch
-        # For example, using `pytest`
         run: uv run python preprocess_forecast.py
-        env: # Set the secret as an input
-              AIVEN_USER: ${{ secrets.AIVEN_USER }}
-              AIVEN_PASSWORD: ${{ secrets.AIVEN_PASSWORD }}
-              AIVEN_HOST: ${{ secrets.AIVEN_HOST }}
-              TRIGGER_SOURCE: ${{ github.event_name }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TRIGGER_SOURCE: ${{ github.event_name }}

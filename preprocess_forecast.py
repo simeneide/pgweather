@@ -159,7 +159,8 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=4000):
     # Create tiny value at ground level to avoid finding the ground as the thermal top
     thermal_temp_diff = subset["thermal_temp_diff"]
     thermal_temp_diff = thermal_temp_diff.where(
-        (thermal_temp_diff.sum("altitude") > 0) | (subset["altitude"] != subset.altitude.min()),
+        (thermal_temp_diff.sum("altitude") > 0)
+        | (subset["altitude"] != subset.altitude.min()),
         thermal_temp_diff + 1e-6,
     )
     indices = (thermal_temp_diff > 0).argmax(dim="altitude")
@@ -206,11 +207,14 @@ if __name__ == "__main__":
 
     # Check in db if forecast already exists
     db = db_utils.Database()
-    # Find max forecast timestamp:
+    # Find max forecast timestamp from the detailed output table.
     last_executed_forecast_timestamp = db.read(
-        f"select max(forecast_timestamp) as max_forecast_timestamp from weather_forecasts"
+        "select max(forecast_timestamp) as max_forecast_timestamp from detailed_forecasts"
     )
-    no_new_forecast_exists = last_executed_forecast_timestamp[0, 0] >= forecast_timestamp_datetime
+    max_forecast_timestamp = last_executed_forecast_timestamp[0, 0]
+    no_new_forecast_exists = (max_forecast_timestamp is not None) and (
+        max_forecast_timestamp >= forecast_timestamp_datetime
+    )
 
     if no_new_forecast_exists and (os.getenv("TRIGGER_SOURCE") != "push"):
         print(
@@ -224,14 +228,20 @@ if __name__ == "__main__":
         below_600_intervals = np.arange(0, 600, 100)
         above_600_intervals = np.arange(600, subset.altitude.max() + 200, 200)
         altitude_intervals = np.concatenate([below_600_intervals, above_600_intervals])
-        altitude_interpolated_subset = subset.interp(altitude=altitude_intervals, method="linear")
+        altitude_interpolated_subset = subset.interp(
+            altitude=altitude_intervals, method="linear"
+        )
 
         # %% Convert to dataframe
         df = (
             pl.DataFrame(altitude_interpolated_subset.to_dataframe().reset_index())
-            .with_columns(forecast_timestamp=pl.lit(forecast_timestamp_str).cast(pl.Datetime))
+            .with_columns(
+                forecast_timestamp=pl.lit(forecast_timestamp_str).cast(pl.Datetime)
+            )
             .filter(pl.col("elevation") <= pl.col("altitude"))
-            .with_columns(thermal_height_above_ground=pl.col("altitude") - pl.col("elevation"))
+            .with_columns(
+                thermal_height_above_ground=pl.col("altitude") - pl.col("elevation")
+            )
             .select(
                 "forecast_timestamp",
                 "time",
@@ -248,6 +258,106 @@ if __name__ == "__main__":
                 "thermal_height_above_ground",
             )
         )
+        # %% Compute weather map
+        altitudes_weathermap = [0, 500, 1000, 1600, 2000, 3000, 4000]
+        hours = [6, 9, 12, 15, 18, 21]
+        df_map = (
+            df.filter(
+                pl.col("altitude").is_in(altitudes_weathermap),
+                pl.col("time").dt.hour().is_in(hours),
+            )
+            .select(
+                "forecast_timestamp",
+                "time",
+                "longitude",
+                "latitude",
+                "altitude",
+                "air_temperature_ml",
+                "x_wind_ml",
+                "y_wind_ml",
+                "wind_speed",
+            )
+            .with_columns(
+                wind_direction=-pl.arctan2("y_wind_ml", "x_wind_ml").degrees() + 90
+            )
+        )
+        # df.group_by("forecast_timestamp", "time", "longitude", "latitude").agg()
+
+        target_hour = 12
+        altitude = 1000
+        df_plot = df_map.filter(
+            pl.col("time").dt.hour() == target_hour, pl.col("altitude") == altitude
+        )
+
+        # %%
+        import plotly.graph_objects as go
+        import numpy as np
+        from utils import interpolate_color
+
+        # Assume interpolate_color already exists as in app.py
+        # from app import interpolate_color
+
+        def plot_wind_map(df_plot):
+            # Extract data
+            lats = df_plot["latitude"].to_numpy()
+            lons = df_plot["longitude"].to_numpy()
+            wind_speeds = df_plot["wind_speed"].to_numpy()
+            wind_dirs = df_plot["wind_direction"].to_numpy()
+            air_temp = df_plot["air_temperature_ml"].to_numpy()
+
+            # Generate colors using your color interpolation logic
+            colors = [interpolate_color(s) for s in wind_speeds]
+
+            # Optionally, make arrow length proportional to wind speed (for visual encoding)
+            arrow_length = 0.05  # degrees; tune as needed
+
+            # Calculate arrow endpoint coordinates
+            u = wind_speeds * np.cos(np.radians(wind_dirs - 90)) * arrow_length
+            v = wind_speeds * np.sin(np.radians(wind_dirs - 90)) * arrow_length
+
+            fig = go.Figure()
+
+            # Plot arrows as lines
+            for x, y, dx, dy, color, speed, direction, temp in zip(
+                lons, lats, u, v, colors, wind_speeds, wind_dirs, air_temp
+            ):
+                fig.add_trace(
+                    go.Scattermapbox(
+                        lon=[x, x + dx],
+                        lat=[y, y + dy],
+                        mode="lines+markers",
+                        marker=dict(
+                            size=7,
+                            color=color,
+                        ),
+                        line=dict(color=color, width=2),
+                        hoverinfo="text",
+                        text=[
+                            f"Wind: {speed:.1f} m/s<br>Dir: {direction:.0f}°<br>Temp: {temp:.1f}°C"
+                        ]
+                        * 2,
+                        showlegend=False,
+                    )
+                )
+
+            # Set up the map
+            fig.update_layout(
+                mapbox=dict(
+                    style="open-street-map",
+                    center=dict(lat=np.mean(lats), lon=np.mean(lons)),
+                    zoom=6,
+                ),
+                margin={"r": 0, "t": 0, "l": 0, "b": 0},
+                height=600,
+                title="Wind Vector Map",
+            )
+
+            return fig
+
+            # Usage (assuming you have df_plot with proper polars-to-numpy conversion):
+            # st.plotly_chart(plot_wind_map(df_plot), use_container_width=True)
+
+        fig = plot_wind_map(df_plot.head(5))
         # %% categorize all points into a kommunenavn
         # Step 1: Read the GeoJSON file
         # hentet fra https://github.com/robhop/fylker-og-kommuner/blob/main/Kommuner-S.geojson
@@ -258,12 +368,17 @@ if __name__ == "__main__":
         points_forecast = gpd.GeoDataFrame(
             unique_lat_lon,
             geometry=[
-                Point(xy) for xy in zip(unique_lat_lon["longitude"], unique_lat_lon["latitude"])
+                Point(xy)
+                for xy in zip(unique_lat_lon["longitude"], unique_lat_lon["latitude"])
             ],
         )
         points_forecast.set_crs(areas_gdf.crs, inplace=True)
-        named_lat_lon = gpd.sjoin(points_forecast, areas_gdf, how="left", predicate="within")
-        df_names = pl.DataFrame(named_lat_lon[["longitude", "latitude", "name"]]).drop_nulls()
+        named_lat_lon = gpd.sjoin(
+            points_forecast, areas_gdf, how="left", predicate="within"
+        )
+        df_names = pl.DataFrame(
+            named_lat_lon[["longitude", "latitude", "name"]]
+        ).drop_nulls()
 
         # Group by name, time and altitude and calculate the mean of the other columns
         area_forecasts = (
@@ -280,10 +395,12 @@ if __name__ == "__main__":
         geojson_takeoffs.set_crs(areas_gdf.crs, inplace=True)
         takeoffs = gpd.sjoin_nearest(
             geojson_takeoffs, points_forecast, how="left", max_distance=10000
-        )[["name", "longitude_takeoff", "latitude_takeoff", "longitude", "latitude"]]  # ,'pge_link'
+        )[
+            ["name", "longitude_takeoff", "latitude_takeoff", "longitude", "latitude"]
+        ]  # ,'pge_link'
         df_takeoffs = pl.DataFrame(takeoffs)
 
-        point_forecasts = (
+        takeoff_forecasts = (
             df.join(df_takeoffs, on=["longitude", "latitude"], how="inner")
             # deselect lat lon
             .select(pl.exclude("longitude", "latitude"))
@@ -292,9 +409,10 @@ if __name__ == "__main__":
         )
 
         point_forecasts = pl.concat(
-            [point_forecasts, area_forecasts.select(point_forecasts.columns)],
+            [takeoff_forecasts, area_forecasts.select(takeoff_forecasts.columns)],
             how="vertical_relaxed",
         )
+        # %%
 
         # Save to aiven db
         print("Save area forecast to db..")

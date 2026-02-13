@@ -3,18 +3,38 @@
 import polars as pl
 import streamlit as st
 from dotenv import load_dotenv
+from typing import Optional
 
 load_dotenv()
 import os
 
 
+def _get_database_uri() -> str:
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return database_url
+
+    # Backward-compatible fallback for legacy Aiven credentials.
+    aiven_user = os.getenv("AIVEN_USER")
+    aiven_password = os.getenv("AIVEN_PASSWORD")
+    if aiven_user and aiven_password:
+        return (
+            "postgres://"
+            f"{aiven_user}:{aiven_password}"
+            "@pg-weather-pg-weather.b.aivencloud.com:20910/defaultdb"
+            "?sslmode=require"
+        )
+
+    raise RuntimeError(
+        "Database credentials missing. Set DATABASE_URL (Supabase/Fly Postgres URI)."
+    )
+
+
 class Database:
-    """Simple wrapper around polars to read and write to aiven database"""
+    """Simple wrapper around polars to read and write to Postgres."""
 
-    uri = f"postgres://{os.environ['AIVEN_USER']}:{os.environ['AIVEN_PASSWORD']}@pg-weather-pg-weather.b.aivencloud.com:20910/defaultdb?sslmode=require"
-
-    def __init__(self):
-        pass
+    def __init__(self, uri: Optional[str] = None):
+        self.uri = uri or _get_database_uri()
 
     def read(self, query):
         """
