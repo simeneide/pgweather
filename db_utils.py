@@ -10,7 +10,7 @@ import os
 
 
 def _get_database_uri() -> str:
-    database_url = os.getenv("DATABASE_URL")
+    database_url = os.getenv("SUPABASE_DB_URL")
     if database_url:
         return database_url
 
@@ -25,9 +25,7 @@ def _get_database_uri() -> str:
             "?sslmode=require"
         )
 
-    raise RuntimeError(
-        "Database credentials missing. Set DATABASE_URL (Supabase/Fly Postgres URI)."
-    )
+    raise RuntimeError("Database credentials missing. Set SUPABASE_DB_URL.")
 
 
 class Database:
