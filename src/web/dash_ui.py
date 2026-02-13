@@ -50,7 +50,7 @@ def _day_label(iso_date: str) -> str:
 def create_dash_app() -> Dash:
     app = Dash(
         __name__,
-        title="\U0001fa82 Termikkvarselet",
+        title="Termikkvarselet",
         update_title=None,
         requests_pathname_prefix="/",
         suppress_callback_exceptions=True,
@@ -97,7 +97,7 @@ def create_dash_app() -> Dash:
             # Stores
             dcc.Store(id="days-map-store", data=days_map_serialized),
             dcc.Store(id="selected-time-store", data=default_time_iso),
-            html.H1("\U0001fa82 Termikkvarselet"),
+            html.H1("Termikkvarselet"),
             html.Div(
                 [
                     # Day selector (RadioItems styled as pill buttons)
