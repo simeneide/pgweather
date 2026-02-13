@@ -408,13 +408,14 @@ def _wind_arrow_color(
 
 # Thermal colorscale: grey -> yellow -> orange (mimics meteo-parapente)
 _THERMAL_COLORSCALE = [
-    [0.0, "rgba(220,220,220,0.0)"],  # zero diff – transparent
-    [0.05, "rgba(255,255,200,0.3)"],  # very slight – faint yellow
-    [0.15, "rgba(255,255,100,0.6)"],  # weak thermal – yellow
-    [0.30, "rgba(255,220,50,0.8)"],  # moderate – golden
-    [0.50, "rgba(255,180,30,0.9)"],  # good thermal – orange-yellow
-    [0.70, "rgba(255,140,0,0.95)"],  # strong – orange
-    [1.0, "rgba(255,80,0,1.0)"],  # very strong – deep orange
+    [0.0, "rgb(255,255,255)"],  # zero diff – white (matches background)
+    [0.01, "rgb(255,255,255)"],  # tiny buffer to keep near-zero white
+    [0.05, "rgb(255,255,200)"],  # very slight – faint yellow
+    [0.15, "rgb(255,255,100)"],  # weak thermal – yellow
+    [0.30, "rgb(255,220,50)"],  # moderate – golden
+    [0.50, "rgb(255,180,30)"],  # good thermal – orange-yellow
+    [0.70, "rgb(255,140,0)"],  # strong – orange
+    [1.0, "rgb(255,80,0)"],  # very strong – deep orange
 ]
 
 
@@ -501,6 +502,15 @@ def build_airgram_figure(
     fig = go.Figure()
 
     # --- 1) Thermal heatmap (background) ---
+    # Zero out thermal_temp_diff above the computed thermal_top so the
+    # heatmap boundary matches the thermal top line exactly.
+    plot_frame = plot_frame.with_columns(
+        pl.when(pl.col("altitude") > pl.col("thermal_top"))
+        .then(0.0)
+        .otherwise(pl.col("thermal_temp_diff"))
+        .alias("thermal_temp_diff")
+    )
+
     # Pivot thermal data into a 2D grid for the heatmap
     thermal_pivot = plot_frame.pivot(
         on="time_label", index="altitude", values="thermal_temp_diff"
