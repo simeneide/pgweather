@@ -161,24 +161,21 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=4000):
     THERMAL_TOP_THRESHOLD = 0.5  # °C
 
     thermal_temp_diff = subset["thermal_temp_diff"]
-    # Mark altitudes where thermals are usable
-    is_usable = thermal_temp_diff >= THERMAL_TOP_THRESHOLD
-    # For each (time, y, x) column find the *highest* altitude that is usable.
-    # We reverse the altitude axis so that argmax finds the first True from the
-    # top, then convert back to the original index.
-    n_alt = is_usable.sizes["altitude"]
-    first_from_top = is_usable.isel(altitude=slice(None, None, -1)).argmax(
-        dim="altitude"
+    # Zero out values below the threshold so argmax finds the first altitude
+    # (from the top, since MEPS altitudes are descending) where thermals are
+    # still usable.
+    usable_diff = thermal_temp_diff.where(
+        thermal_temp_diff >= THERMAL_TOP_THRESHOLD, 0.0
     )
-    top_idx = n_alt - 1 - first_from_top
-
-    # When no altitude exceeds the threshold argmax returns 0 (first-from-top)
-    # which maps to index n_alt-1 after reversal — use the lowest altitude as
-    # a fallback (i.e. no usable thermals).
-    no_thermal = ~is_usable.any(dim="altitude")
-    top_idx = top_idx.where(~no_thermal, 0)
-
-    thermal_top = subset.altitude.values[top_idx]
+    # Add tiny value at the lowest altitude to avoid ground being reported as
+    # thermal top when no altitude exceeds the threshold.
+    usable_diff = usable_diff.where(
+        (usable_diff.sum("altitude") > 0)
+        | (subset["altitude"] != subset.altitude.min()),
+        usable_diff + 1e-6,
+    )
+    indices = (usable_diff > 0).argmax(dim="altitude")
+    thermal_top = subset.altitude[indices]
     subset = subset.assign(thermal_top=(("time", "y", "x"), thermal_top.data))
     subset = subset.set_coords(["latitude", "longitude"])
     return subset
