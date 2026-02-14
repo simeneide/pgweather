@@ -5,7 +5,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode
 from zoneinfo import ZoneInfo
 
-from dash import Dash, Input, Output, State, dcc, html, no_update
+import plotly.graph_objects as go
+from dash import Dash, Input, Output, State, callback_context, dcc, html, no_update
 
 from . import forecast_service
 
@@ -47,6 +48,28 @@ def _day_label(iso_date: str) -> str:
     return d.strftime("%a %d")
 
 
+def _empty_airgram() -> go.Figure:
+    """Placeholder figure shown when no location is selected."""
+    fig = go.Figure()
+    fig.add_annotation(
+        text="Select a takeoff on the map to see the windgram.",
+        x=0.5,
+        y=0.5,
+        xref="paper",
+        yref="paper",
+        showarrow=False,
+        font=dict(size=14, color="#888"),
+    )
+    fig.update_layout(
+        height=200,
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        plot_bgcolor="white",
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    return fig
+
+
 def create_dash_app() -> Dash:
     app = Dash(
         __name__,
@@ -68,7 +91,6 @@ def create_dash_app() -> Dash:
     if not location_options:
         raise RuntimeError("No takeoff locations available")
     names = [option["value"] for option in location_options]
-    default_name = names[0]
     default_time = forecast_service.get_default_selected_time(df)
 
     # Group available datetimes by local day
@@ -79,10 +101,11 @@ def create_dash_app() -> Dash:
     if default_day not in day_keys:
         default_day = day_keys[0]
 
-    # Pre-select the closest time within the default day
+    # Pre-select the time closest to 14:00 local within the default day
+    target_hour = 14
     day_times = days_map[default_day]
     default_time_iso = _to_iso(
-        min(day_times, key=lambda t: abs((t - default_time).total_seconds()))
+        min(day_times, key=lambda t: abs(_to_local(t).hour - target_hour))
     )
 
     # Build day radio options
@@ -91,17 +114,37 @@ def create_dash_app() -> Dash:
     # Serialize days_map for client-side use
     days_map_serialized = {dk: [_to_iso(t) for t in ts] for dk, ts in days_map.items()}
 
+    # ---------------------------------------------------------------
+    # Layout
+    # ---------------------------------------------------------------
     app.layout = html.Div(
         [
             dcc.Location(id="url", refresh=False),
             # Stores
             dcc.Store(id="days-map-store", data=days_map_serialized),
+            dcc.Store(id="day-keys-store", data=day_keys),
             dcc.Store(id="selected-time-store", data=default_time_iso),
+            dcc.Store(id="modal-open-store", data=False),
+            # Hidden keyboard listener
+            html.Div(
+                id="keyboard-listener",
+                tabIndex="0",
+                style={
+                    "position": "fixed",
+                    "top": 0,
+                    "left": 0,
+                    "width": "100%",
+                    "height": "100%",
+                    "zIndex": -1,
+                    "opacity": 0,
+                },
+                **{"data-dummy": ""},
+            ),
             html.H1("Termikkvarselet"),
+            # Map controls panel
             html.Div(
                 [
-                    # Day selector (RadioItems styled as pill buttons)
-                    html.Label("Date", style={"fontWeight": 600}),
+                    # Day selector (also mirrored inside the modal)
                     dcc.RadioItems(
                         id="day-radio",
                         options=day_radio_options,
@@ -109,99 +152,144 @@ def create_dash_app() -> Dash:
                         inline=True,
                         className="pill-radio",
                     ),
-                    # Location
-                    html.Label(
-                        "Location",
-                        style={"fontWeight": 600, "marginTop": "4px"},
+                    # Hour +/- controls with current time display
+                    html.Div(
+                        [
+                            html.Button(
+                                "\u25c0",
+                                id="hour-prev-btn",
+                                n_clicks=0,
+                                className="hour-btn",
+                                title="Previous hour",
+                            ),
+                            html.Span(
+                                id="current-hour-label",
+                                style={
+                                    "minWidth": "56px",
+                                    "textAlign": "center",
+                                    "fontWeight": 600,
+                                    "fontSize": "14px",
+                                    "color": "#1e293b",
+                                },
+                            ),
+                            html.Button(
+                                "\u25b6",
+                                id="hour-next-btn",
+                                n_clicks=0,
+                                className="hour-btn",
+                                title="Next hour",
+                            ),
+                        ],
+                        style={
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "6px",
+                        },
                     ),
+                    # Location search
                     dcc.Dropdown(
                         id="location-dropdown",
                         options=location_options,
-                        value=default_name,
-                        clearable=False,
+                        value=None,
+                        clearable=True,
+                        placeholder="Search takeoff...",
                     ),
-                    # Advanced settings
-                    html.Details(
-                        [
-                            html.Summary(
-                                "Advanced map settings",
-                                style={"cursor": "pointer", "fontWeight": 600},
-                            ),
-                            html.Div(
-                                [
-                                    html.Label(
-                                        "Map layer", style={"marginTop": "10px"}
-                                    ),
-                                    dcc.RadioItems(
-                                        id="layer-radio",
-                                        options=[
-                                            {"label": "Both", "value": "both"},
-                                            {"label": "Takeoffs", "value": "takeoffs"},
-                                            {"label": "Areas", "value": "areas"},
-                                        ],
-                                        value="both",
-                                        inline=True,
-                                    ),
-                                    html.Label("Map zoom"),
-                                    dcc.Slider(
-                                        id="zoom-slider",
-                                        min=4,
-                                        max=10,
-                                        step=1,
-                                        value=6,
-                                    ),
-                                    html.Label("Max altitude (m)"),
-                                    dcc.Slider(
-                                        id="altitude-slider",
-                                        min=1000,
-                                        max=4000,
-                                        step=500,
-                                        value=3000,
-                                    ),
-                                ],
-                                style={"padding": "6px 4px"},
-                            ),
-                        ],
-                        open=False,
-                        style={
-                            "border": "1px solid #d9dee6",
-                            "borderRadius": "8px",
-                            "padding": "8px",
-                            "background": "#fafbfd",
-                        },
-                    ),
+                    # Hidden stores for removed controls (keep callback inputs valid)
+                    dcc.Store(id="layer-radio", data="both"),
+                    dcc.Store(id="zoom-slider", data=6),
                 ],
                 style={
                     "display": "grid",
-                    "gap": "10px",
+                    "gap": "8px",
                     "maxWidth": "860px",
-                    "marginBottom": "12px",
-                    "padding": "12px",
+                    "marginBottom": "8px",
+                    "padding": "10px 12px",
                     "background": "#f5f8fb",
                     "border": "1px solid #d9dee6",
                     "borderRadius": "12px",
                 },
             ),
-            dcc.Graph(id="map-graph", config={"displayModeBar": False}),
-            # Windgram with Yr icons embedded — tap to select hour
             dcc.Graph(
-                id="airgram-graph",
-                config={
-                    "displayModeBar": False,
-                    "scrollZoom": False,
-                    "doubleClick": False,
-                    "responsive": True,
-                },
-                style={"marginTop": "6px"},
+                id="map-graph",
+                config={"displayModeBar": False},
+                style={"height": "75vh", "minHeight": "350px"},
             ),
-            # Summary / forecast info at the bottom
+            # Summary / forecast info below map (clickable to reopen modal)
             html.Div(
                 id="summary-text",
+                n_clicks=0,
                 style={
-                    "margin": "10px 0 0 0",
+                    "margin": "6px 0 0 0",
                     "color": "#888",
                     "fontSize": "12px",
+                    "cursor": "pointer",
                 },
+                title="Click to open windgram",
+            ),
+            # --- Windgram modal overlay ---
+            html.Div(
+                id="modal-wrapper",
+                className="modal-wrapper hidden",
+                children=[
+                    html.Div(
+                        id="modal-backdrop",
+                        className="modal-backdrop-layer",
+                        n_clicks=0,
+                    ),
+                    html.Div(
+                        id="modal-content",
+                        className="modal-content",
+                        children=[
+                            html.Button(
+                                "\u00d7",
+                                id="modal-close-btn",
+                                className="modal-close-btn",
+                                n_clicks=0,
+                            ),
+                            # Modal header: location name + date pills
+                            html.Div(
+                                id="modal-header",
+                                className="modal-header",
+                                children=[
+                                    html.H2(
+                                        id="modal-title",
+                                        children="",
+                                        style={
+                                            "margin": "0 0 6px 0",
+                                            "fontSize": "1.1rem",
+                                            "fontWeight": 700,
+                                            "color": "#1e293b",
+                                            "paddingRight": "36px",
+                                        },
+                                    ),
+                                    # Day selector (synced with main page)
+                                    dcc.RadioItems(
+                                        id="modal-day-radio",
+                                        options=day_radio_options,
+                                        value=default_day,
+                                        inline=True,
+                                        className="pill-radio",
+                                    ),
+                                    # Fixed altitude (hidden)
+                                    dcc.Store(
+                                        id="altitude-slider",
+                                        data=3000,
+                                    ),
+                                ],
+                            ),
+                            # Windgram graph
+                            dcc.Graph(
+                                id="airgram-graph",
+                                config={
+                                    "displayModeBar": False,
+                                    "scrollZoom": False,
+                                    "doubleClick": False,
+                                    "responsive": True,
+                                },
+                            ),
+                        ],
+                    ),
+                ],
             ),
             # Attribution footer
             html.Footer(
@@ -253,17 +341,48 @@ def create_dash_app() -> Dash:
         style={"maxWidth": "1200px", "margin": "0 auto", "padding": "16px"},
     )
 
+    # ===================================================================
+    # Callbacks
+    # ===================================================================
+
     # -------------------------------------------------------------------
-    # Day changed -> pick best time in new day and update store
+    # Sync: main day-radio -> modal day-radio
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("modal-day-radio", "value", allow_duplicate=True),
+        Input("day-radio", "value"),
+        prevent_initial_call=True,
+    )
+    def sync_day_to_modal(day_key):
+        return day_key
+
+    # -------------------------------------------------------------------
+    # Sync: modal day-radio -> main day-radio
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("day-radio", "value", allow_duplicate=True),
+        Input("modal-day-radio", "value"),
+        prevent_initial_call=True,
+    )
+    def sync_day_to_main(day_key):
+        return day_key
+
+    # -------------------------------------------------------------------
+    # Day changed (either radio) -> pick best time in new day
     # -------------------------------------------------------------------
     @app.callback(
         Output("selected-time-store", "data", allow_duplicate=True),
         Input("day-radio", "value"),
+        Input("modal-day-radio", "value"),
         State("selected-time-store", "data"),
         State("days-map-store", "data"),
         prevent_initial_call=True,
     )
-    def on_day_changed(day_key, current_time_iso, days_map_data):
+    def on_day_changed(main_day, modal_day, current_time_iso, days_map_data):
+        # Use whichever was triggered; both should be in sync
+        triggered = callback_context.triggered_id
+        day_key = modal_day if triggered == "modal-day-radio" else main_day
+
         time_isos = days_map_data.get(day_key, [])
         if not time_isos:
             return current_time_iso
@@ -317,7 +436,7 @@ def create_dash_app() -> Dash:
         return current_time_iso
 
     # -------------------------------------------------------------------
-    # Location from URL query param
+    # Location from URL query param (on initial load)
     # -------------------------------------------------------------------
     @app.callback(
         Output("location-dropdown", "value", allow_duplicate=True),
@@ -325,14 +444,14 @@ def create_dash_app() -> Dash:
         State("location-dropdown", "value"),
         prevent_initial_call=True,
     )
-    def location_from_query(search: str, current_value: str):
+    def location_from_query(search: str, current_value: str | None):
         if not search:
-            return current_value
+            return no_update
         params = parse_qs(search.lstrip("?"))
         location = params.get("location", [None])[0]
         if location and location in names:
             return location
-        return current_value
+        return no_update
 
     # -------------------------------------------------------------------
     # Location -> URL query param
@@ -343,7 +462,9 @@ def create_dash_app() -> Dash:
         State("url", "search"),
         prevent_initial_call=True,
     )
-    def query_from_location(selected_name: str, current_search: str):
+    def query_from_location(selected_name: str | None, current_search: str):
+        if not selected_name:
+            return no_update
         params = parse_qs((current_search or "").lstrip("?"))
         params["location"] = [selected_name]
         return "?" + urlencode(params, doseq=True)
@@ -355,16 +476,17 @@ def create_dash_app() -> Dash:
         Output("map-graph", "figure"),
         Output("airgram-graph", "figure"),
         Output("summary-text", "children"),
+        Output("modal-title", "children"),
         Input("selected-time-store", "data"),
         Input("location-dropdown", "value"),
-        Input("layer-radio", "value"),
-        Input("zoom-slider", "value"),
-        Input("altitude-slider", "value"),
+        Input("layer-radio", "data"),
+        Input("zoom-slider", "data"),
+        Input("altitude-slider", "data"),
     )
     def update_figures(
         selected_time_iso: str,
-        selected_name: str,
-        map_layer: str,
+        selected_name: str | None,
+        _map_layer: str,
         zoom: int,
         altitude_max: int,
     ):
@@ -377,12 +499,15 @@ def create_dash_app() -> Dash:
         map_fig = forecast_service.build_map_figure(
             selected_time=selected_time_utc,
             selected_name=selected_name,
-            map_layer=map_layer,
             zoom=zoom,
             df=df_now,
         )
 
-        # Fetch Yr data synced to MEPS hours
+        # If no location selected, return empty airgram
+        if not selected_name:
+            return map_fig, _empty_airgram(), "", ""
+
+        # Build airgram for selected location
         day = selected_time_local.date()
         forecast_hours = forecast_service.get_forecast_hours_for_day(
             selected_name, day, df_now
@@ -411,13 +536,18 @@ def create_dash_app() -> Dash:
             f" local ({age_hours:.1f}h ago)"
         )
 
-        return map_fig, airgram_fig, merged
+        # Modal title: location name + date
+        date_label = selected_time_local.strftime("%a %d %b")
+        modal_title = f"{selected_name} — {date_label}"
+
+        return map_fig, airgram_fig, merged, modal_title
 
     # -------------------------------------------------------------------
-    # Click map -> select location
+    # Click map -> select location + open modal
     # -------------------------------------------------------------------
     @app.callback(
         Output("location-dropdown", "value", allow_duplicate=True),
+        Output("modal-open-store", "data", allow_duplicate=True),
         Input("map-graph", "clickData"),
         State("location-dropdown", "value"),
         prevent_initial_call=True,
@@ -428,9 +558,159 @@ def create_dash_app() -> Dash:
             or "points" not in click_data
             or len(click_data["points"]) == 0
         ):
-            return current_value
+            return no_update, no_update
         point = click_data["points"][0]
         name = point.get("customdata")
-        return name or current_value
+        if not name:
+            return no_update, no_update
+        # Always open modal on map click (even if same location re-clicked)
+        return name, True
+
+    # -------------------------------------------------------------------
+    # Open modal when a location is selected
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("modal-open-store", "data", allow_duplicate=True),
+        Input("location-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def open_modal_on_location(selected_name):
+        if selected_name:
+            return True
+        return False
+
+    # -------------------------------------------------------------------
+    # Reopen modal when summary text is clicked
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("modal-open-store", "data", allow_duplicate=True),
+        Input("summary-text", "n_clicks"),
+        State("location-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def reopen_modal_on_summary_click(n_clicks, selected_name):
+        if n_clicks and selected_name:
+            return True
+        return no_update
+
+    # -------------------------------------------------------------------
+    # Close modal: close button or backdrop click
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("modal-open-store", "data", allow_duplicate=True),
+        Input("modal-close-btn", "n_clicks"),
+        Input("modal-backdrop", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def close_modal(close_clicks, backdrop_clicks):
+        return False
+
+    # -------------------------------------------------------------------
+    # Toggle modal visibility via className on the wrapper
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("modal-wrapper", "className"),
+        Input("modal-open-store", "data"),
+    )
+    def toggle_modal_visibility(is_open):
+        if is_open:
+            return "modal-wrapper"
+        return "modal-wrapper hidden"
+
+    # -------------------------------------------------------------------
+    # Hour +/- buttons -> step through available times in the current day
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("selected-time-store", "data", allow_duplicate=True),
+        Input("hour-prev-btn", "n_clicks"),
+        Input("hour-next-btn", "n_clicks"),
+        State("selected-time-store", "data"),
+        State("days-map-store", "data"),
+        State("day-radio", "value"),
+        prevent_initial_call=True,
+    )
+    def on_hour_button(
+        prev_clicks, next_clicks, current_time_iso, days_map_data, day_key
+    ):
+        triggered = callback_context.triggered_id
+        direction = -1 if triggered == "hour-prev-btn" else 1
+
+        time_isos = days_map_data.get(day_key, [])
+        if not time_isos or not current_time_iso:
+            return no_update
+
+        # Find current index
+        try:
+            idx = time_isos.index(current_time_iso)
+        except ValueError:
+            # Current time not in this day's list — snap to closest
+            current_hour = _to_local(_from_iso(current_time_iso)).hour
+            idx = min(
+                range(len(time_isos)),
+                key=lambda i: abs(
+                    _to_local(_from_iso(time_isos[i])).hour - current_hour
+                ),
+            )
+
+        new_idx = idx + direction
+        if new_idx < 0 or new_idx >= len(time_isos):
+            return no_update
+        return time_isos[new_idx]
+
+    # -------------------------------------------------------------------
+    # Update current hour label from selected-time-store
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("current-hour-label", "children"),
+        Input("selected-time-store", "data"),
+    )
+    def update_hour_label(selected_time_iso):
+        if not selected_time_iso:
+            return ""
+        local_t = _to_local(_from_iso(selected_time_iso))
+        return local_t.strftime("%H:%M")
+
+    # -------------------------------------------------------------------
+    # Arrow keys: left/right switch day
+    # Uses a clientside callback that directly computes the new day
+    # from the current day-radio value and the day-keys list.
+    # -------------------------------------------------------------------
+    app.clientside_callback(
+        """
+        function(currentDay, dayKeys) {
+            // Install the keyboard listener once, updating closure vars
+            if (!window._pgw_arrow) {
+                window._pgw_arrow = {currentDay: currentDay, dayKeys: dayKeys};
+                document.addEventListener('keydown', function(e) {
+                    // Escape closes the windgram modal
+                    if (e.key === 'Escape') {
+                        var closeBtn = document.getElementById('modal-close-btn');
+                        if (closeBtn) closeBtn.click();
+                        return;
+                    }
+                    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+                    e.preventDefault();
+                    var state = window._pgw_arrow;
+                    var idx = state.dayKeys.indexOf(state.currentDay);
+                    if (idx < 0) return;
+                    var newIdx = e.key === 'ArrowLeft' ? idx - 1 : idx + 1;
+                    if (newIdx < 0 || newIdx >= state.dayKeys.length) return;
+                    // Programmatically click the correct pill in the main radio
+                    var pills = document.querySelectorAll(
+                        '#day-radio .dash-options-list-option'
+                    );
+                    if (pills[newIdx]) pills[newIdx].click();
+                });
+            }
+            // Keep closure in sync with current values
+            window._pgw_arrow.currentDay = currentDay;
+            window._pgw_arrow.dayKeys = dayKeys;
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output("keyboard-listener", "data-dummy"),
+        Input("day-radio", "value"),
+        Input("day-keys-store", "data"),
+    )
 
     return app

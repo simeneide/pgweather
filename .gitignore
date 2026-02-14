@@ -2,3 +2,4 @@
 forecasts/
 *.nc
 .venv/
+*.png

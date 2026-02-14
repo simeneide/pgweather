@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
 import logging
-from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import plotly.graph_objects as go
@@ -153,12 +152,6 @@ def get_yr_weather_for_day(
     return result
 
 
-def _load_geojson() -> dict:
-    geojson_path = Path(__file__).resolve().parents[2] / "Kommuner-S.geojson"
-    with geojson_path.open("r", encoding="utf-8") as file:
-        return json.load(file)
-
-
 def load_forecast_data(force_refresh: bool = False) -> pl.DataFrame:
     now = dt.datetime.now(dt.timezone.utc)
     loaded_at = _CACHE["loaded_at"]
@@ -276,14 +269,10 @@ def get_default_selected_time(df: Optional[pl.DataFrame] = None) -> dt.datetime:
 def build_map_figure(
     selected_time: dt.datetime,
     selected_name: Optional[str],
-    map_layer: str,
     zoom: int,
     df: Optional[pl.DataFrame] = None,
 ) -> go.Figure:
     frame = df if df is not None else load_forecast_data()
-    show_area = map_layer in ["both", "areas"]
-    show_takeoffs = map_layer in ["both", "takeoffs"]
-    geojson = _load_geojson()
 
     thermal_colorscale = [
         (0.0, "grey"),
@@ -295,86 +284,134 @@ def build_map_figure(
 
     fig = go.Figure()
 
-    if show_area:
-        subset_area = frame.filter(
-            (pl.col("time") == selected_time) & (pl.col("point_type") == "area")
-        )
-        if len(subset_area) > 0:
-            names = subset_area.get_column("name").to_numpy()
-            thermal_top = subset_area.get_column("thermal_top").to_numpy().round()
-            fig.add_trace(
-                go.Choroplethmap(
-                    geojson=geojson,
-                    zmin=0,
-                    zmax=5000,
-                    featureidkey="properties.name",
-                    locations=names,
-                    ids=names,
-                    z=thermal_top,
-                    colorscale=thermal_colorscale,
-                    marker_opacity=0.35,
-                    showscale=True,
-                    colorbar=dict(title="Thermal top (m)"),
-                    hovertext=[
-                        f"{name} | median thermal top: {ht} m"
-                        for ht, name in zip(thermal_top, names)
-                    ],
-                )
-            )
-
     center = {"lat": 61.2, "lon": 8.0}
-    if show_takeoffs:
-        subset_points = frame.filter(
-            (pl.col("time") == selected_time) & (pl.col("point_type") != "area")
-        )
-        if len(subset_points) > 0:
-            lat = subset_points.get_column("latitude").to_numpy()
-            lon = subset_points.get_column("longitude").to_numpy()
-            thermal_top = subset_points.get_column("thermal_top").to_numpy().round()
-            names = subset_points.get_column("name").to_numpy()
-            if selected_name is not None:
-                selected = names == selected_name
-            else:
-                selected = np.zeros_like(names, dtype=bool)
-            marker_size = np.where(selected, 20, 9)
-            if selected.any():
-                selected_idx = int(np.argmax(selected))
-                center = {
-                    "lat": float(lat[selected_idx]),
-                    "lon": float(lon[selected_idx]),
-                }
-            else:
-                center = {"lat": float(lat.mean()), "lon": float(lon.mean())}
-            fig.add_trace(
-                go.Scattermap(
-                    lat=lat,
-                    lon=lon,
-                    mode="markers",
-                    marker=go.scattermap.Marker(
-                        size=marker_size,
-                        cmin=0,
-                        cmax=5000,
-                        color=thermal_top,
-                        colorscale=thermal_colorscale,
-                        opacity=1,
-                        showscale=False,
-                    ),
-                    ids=names,
-                    customdata=names,
-                    text=[
-                        f"{name} | thermal top: {ht} m"
-                        for ht, name in zip(thermal_top, names)
-                    ],
-                    hoverinfo="text",
-                )
+    subset_points = frame.filter(
+        (pl.col("time") == selected_time) & (pl.col("point_type") != "area")
+    )
+    if len(subset_points) > 0:
+        lat = subset_points.get_column("latitude").to_numpy()
+        lon = subset_points.get_column("longitude").to_numpy()
+        thermal_top = subset_points.get_column("thermal_top").to_numpy().round()
+        names = subset_points.get_column("name").to_numpy()
+        if selected_name is not None:
+            selected = names == selected_name
+        else:
+            selected = np.zeros_like(names, dtype=bool)
+        marker_size = np.where(selected, 18, 11)
+        if selected.any():
+            selected_idx = int(np.argmax(selected))
+            center = {
+                "lat": float(lat[selected_idx]),
+                "lon": float(lon[selected_idx]),
+            }
+        else:
+            center = {"lat": float(lat.mean()), "lon": float(lon.mean())}
+
+        # Outline layer — dark ring behind each marker for contrast
+        outline_size = marker_size + 5
+        fig.add_trace(
+            go.Scattermap(
+                lat=lat,
+                lon=lon,
+                mode="markers",
+                marker=go.scattermap.Marker(
+                    size=outline_size,
+                    color="rgba(30,41,59,0.5)",
+                    opacity=1,
+                ),
+                hoverinfo="skip",
+                showlegend=False,
             )
+        )
+
+        # Main colored markers
+        fig.add_trace(
+            go.Scattermap(
+                lat=lat,
+                lon=lon,
+                mode="markers",
+                marker=go.scattermap.Marker(
+                    size=marker_size,
+                    cmin=0,
+                    cmax=5000,
+                    color=thermal_top,
+                    colorscale=thermal_colorscale,
+                    opacity=1,
+                    showscale=True,
+                    colorbar=dict(
+                        title=dict(
+                            text="Thermal top (m)",
+                            side="right",
+                            font=dict(size=10),
+                        ),
+                        orientation="h",
+                        y=-0.02,
+                        yanchor="top",
+                        thickness=10,
+                        len=0.6,
+                        x=0.5,
+                        xanchor="center",
+                        tickfont=dict(size=10),
+                    ),
+                ),
+                ids=names,
+                customdata=names,
+                text=[
+                    f"{name} | thermal top: {ht} m"
+                    for ht, name in zip(thermal_top, names)
+                ],
+                hoverinfo="text",
+                showlegend=False,
+            )
+        )
 
     fig.update_layout(
         map_style="open-street-map",
         map=dict(center=center, zoom=zoom),
-        margin={"r": 0, "t": 0, "l": 0, "b": 0},
+        margin={"r": 0, "t": 0, "l": 0, "b": 34},
         uirevision="map-keep-view",
+        autosize=True,
+        showlegend=False,
     )
+
+    # Time badge — top-right corner
+    local_tz = ZoneInfo("Europe/Oslo")
+    local_time = selected_time.astimezone(local_tz)
+    time_label = local_time.strftime("%a %d %b %H:%M")
+    fig.add_annotation(
+        text=f"<b>{time_label}</b>",
+        x=1,
+        y=1,
+        xref="paper",
+        yref="paper",
+        xanchor="right",
+        yanchor="top",
+        showarrow=False,
+        font=dict(size=13, color="#1e293b"),
+        bgcolor="rgba(255,255,255,0.85)",
+        bordercolor="rgba(200,200,200,0.5)",
+        borderwidth=1,
+        borderpad=5,
+    )
+
+    # Selected takeoff name label — top-left corner
+    if selected_name:
+        fig.add_annotation(
+            text=f"<b>{selected_name}</b>",
+            x=0,
+            y=1,
+            xref="paper",
+            yref="paper",
+            xanchor="left",
+            yanchor="top",
+            showarrow=False,
+            font=dict(size=13, color="#1e293b"),
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="rgba(200,200,200,0.5)",
+            borderwidth=1,
+            borderpad=5,
+        )
+
     if len(fig.data) == 0:
         fig.add_annotation(
             text="No map data for selected time.",
