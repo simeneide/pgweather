@@ -10,10 +10,12 @@ import os
 
 
 def _get_database_uri() -> str:
-    database_url = os.getenv("SUPABASE_DB_URL")
+    database_url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
     if database_url:
         return database_url
-    raise RuntimeError("Database credentials missing. Set SUPABASE_DB_URL.")
+    raise RuntimeError(
+        "Database credentials missing. Set SUPABASE_DB_URL or DATABASE_URL."
+    )
 
 
 class Database:
