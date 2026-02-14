@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
+from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -152,6 +154,12 @@ def get_yr_weather_for_day(
     return result
 
 
+def _load_geojson() -> dict:
+    geojson_path = Path(__file__).resolve().parents[2] / "Kommuner-S.geojson"
+    with geojson_path.open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
 def load_forecast_data(force_refresh: bool = False) -> pl.DataFrame:
     now = dt.datetime.now(dt.timezone.utc)
     loaded_at = _CACHE["loaded_at"]
@@ -283,6 +291,35 @@ def build_map_figure(
     ]
 
     fig = go.Figure()
+    geojson = _load_geojson()
+
+    # Kommune choropleth — transparent colored polygons for area-level thermal top
+    subset_area = frame.filter(
+        (pl.col("time") == selected_time) & (pl.col("point_type") == "area")
+    )
+    if len(subset_area) > 0:
+        area_names = subset_area.get_column("name").to_numpy()
+        area_thermal_top = subset_area.get_column("thermal_top").to_numpy().round()
+        fig.add_trace(
+            go.Choroplethmap(
+                geojson=geojson,
+                zmin=0,
+                zmax=5000,
+                featureidkey="properties.name",
+                locations=area_names,
+                ids=area_names,
+                z=area_thermal_top,
+                colorscale=thermal_colorscale,
+                marker_opacity=0.15,
+                showscale=False,
+                showlegend=False,
+                hoverinfo="text",
+                hovertext=[
+                    f"{name} | Median thermal top: {ht:.0f} m"
+                    for ht, name in zip(area_thermal_top, area_names)
+                ],
+            )
+        )
 
     center = {"lat": 61.2, "lon": 8.0}
     subset_points = frame.filter(
