@@ -410,12 +410,13 @@ def _wind_arrow_color(
 _THERMAL_COLORSCALE = [
     [0.0, "rgb(255,255,255)"],  # zero diff – white (matches background)
     [0.01, "rgb(255,255,255)"],  # tiny buffer to keep near-zero white
-    [0.05, "rgb(255,255,200)"],  # very slight – faint yellow
-    [0.15, "rgb(255,255,100)"],  # weak thermal – yellow
-    [0.30, "rgb(255,220,50)"],  # moderate – golden
-    [0.50, "rgb(255,180,30)"],  # good thermal – orange-yellow
-    [0.70, "rgb(255,140,0)"],  # strong – orange
-    [1.0, "rgb(255,80,0)"],  # very strong – deep orange
+    [0.02, "rgb(255,255,210)"],  # barely above threshold – visible tint
+    [0.08, "rgb(255,255,150)"],  # weak thermal (~0.5°C) – light yellow
+    [0.17, "rgb(255,245,80)"],  # moderate (~1°C) – yellow
+    [0.33, "rgb(255,220,50)"],  # good (~2°C) – golden
+    [0.50, "rgb(255,180,30)"],  # strong (~3°C) – orange-yellow
+    [0.70, "rgb(255,140,0)"],  # very strong (~4°C) – orange
+    [1.0, "rgb(255,80,0)"],  # extreme (~6°C) – deep orange
 ]
 
 
