@@ -598,6 +598,7 @@ def build_airgram_figure(
         wind_alts = plot_frame_wind["altitude"].to_numpy()
         wind_dirs = plot_frame_wind["wind_direction"].to_numpy()
         wind_spds = plot_frame_wind["wind_speed"].to_numpy()
+        thermal_diffs = plot_frame_wind["thermal_temp_diff"].to_numpy()
 
         # Arrow markers with speed labels
         fig.add_trace(
@@ -617,8 +618,10 @@ def build_airgram_figure(
                 textfont=dict(size=9, color="#555", family="Arial"),
                 hoverinfo="text",
                 hovertext=[
-                    f"Alt: {alt:.0f}m | {spd:.0f} m/s | {angle:.0f}°"
-                    for alt, spd, angle in zip(wind_alts, wind_spds, wind_dirs)
+                    f"Alt: {alt:.0f}m | {spd:.0f} m/s | {angle:.0f}° | Thermal diff: {td:.1f}°C"
+                    for alt, spd, angle, td in zip(
+                        wind_alts, wind_spds, wind_dirs, thermal_diffs
+                    )
                 ],
                 showlegend=False,
                 cliponaxis=False,
