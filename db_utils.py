@@ -1,7 +1,6 @@
 # %%
 # Write table
 import polars as pl
-import streamlit as st
 from dotenv import load_dotenv
 from typing import Optional
 

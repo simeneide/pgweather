@@ -79,8 +79,7 @@ def create_dash_app() -> Dash:
         suppress_callback_exceptions=True,
         assets_folder=str(_PROJECT_ROOT / "assets"),
     )
-    # Use emoji SVG as favicon
-    app._favicon = "favicon.svg"
+    app._favicon = "logo.png"
 
     df = forecast_service.load_forecast_data()
     available_times = forecast_service.get_available_times(df)
