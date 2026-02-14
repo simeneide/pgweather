@@ -16,19 +16,20 @@ import takeoff_utils
 
 # %%
 def compute_thermal_temp_difference(subset):
-    lapse_rate = 0.0098
-    ground_temp = subset.air_temperature_0m - 273.3
-    air_temp = subset["air_temperature_ml"] - 273.3  # .ffill(dim='altitude')
+    """Compute the buoyancy excess of a dry-adiabatic parcel rising from the surface.
 
-    # dimensions
-    # 'air_temperature_ml'  altitude: 4 y: 3, x: 3
-    # 'elevation'                       y: 3  x: 3
-    # 'altitude'            altitude: 4
+    Uses per-gridpoint height_agl (height above local ground) instead of the
+    domain-averaged altitude coordinate, giving physically correct results in
+    mountainous terrain.
+    """
+    lapse_rate = 0.0098  # dry adiabatic lapse rate, K/m
+    ground_temp = subset.air_temperature_0m - 273.15
+    air_temp = subset["air_temperature_ml"] - 273.15
 
-    # broadcast ground temperature to all altitudes, but let it decrease by lapse rate
-    altitude_diff = subset.altitude - subset.elevation
-    altitude_diff = altitude_diff.where(altitude_diff >= 0, 0)
-    temp_decrease = lapse_rate * altitude_diff
+    # height_agl is per-gridpoint height above local surface (altitude, y, x).
+    # It is always >= 0 by construction (hypsometric equation from surface up).
+    height_above_ground = subset["height_agl"]
+    temp_decrease = lapse_rate * height_above_ground
     ground_parcel_temp = ground_temp - temp_decrease
     thermal_temp_diff = (ground_parcel_temp - air_temp).clip(min=0)
     return thermal_temp_diff
@@ -130,18 +131,26 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=4000):
         # Get the temperature at each level
         T = ds["air_temperature_ml"]  # .mean("ensemble_member")
 
-        # Calculate the height difference between each level and the surface
-        dp = ds["surface_air_pressure"] - p  # Pressure difference
-        dT = T - T.isel(hybrid=-1)  # Temperature difference relative to the surface
-        dT_mean = 0.5 * (T + T.isel(hybrid=-1))  # Mean temperature
+        # Mean temperature between each level and the lowest (surface-adjacent) level
+        dT_mean = 0.5 * (T + T.isel(hybrid=-1))
 
         # Calculate the height using the hypsometric equation
         dz = (R * dT_mean / g) * np.log(ds["surface_air_pressure"] / p)
 
         return dz
 
-    altitude = hybrid_to_height(subset).mean("time").squeeze().mean("x").mean("y")
-    subset = subset.assign_coords(altitude=("hybrid", altitude.data))
+    # Compute height above ground (AGL) per gridpoint: (hybrid, y, x)
+    # This is the physically correct height for thermal calculations.
+    height_agl_3d = hybrid_to_height(subset).mean("time").squeeze()
+
+    # Store per-gridpoint AGL as a data variable (used in thermal calcs).
+    # Assign BEFORE swap_dims so it inherits the dimension rename.
+    subset["height_agl"] = height_agl_3d
+
+    # Domain-averaged altitude used as 1D dimension coordinate for
+    # interpolation and binning — an acceptable approximation.
+    altitude_1d = height_agl_3d.mean("x").mean("y")
+    subset = subset.assign_coords(altitude=("hybrid", altitude_1d.data))
     subset = subset.swap_dims({"hybrid": "altitude"})
 
     # filter subset on altitude ranges
@@ -175,7 +184,9 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=4000):
         usable_diff + 1e-6,
     )
     indices = (usable_diff > 0).argmax(dim="altitude")
-    thermal_top = subset.altitude[indices]
+    # Use per-gridpoint height_agl for thermal top so the value reflects the
+    # actual height above local ground, not the domain-averaged altitude label.
+    thermal_top = subset["height_agl"].isel(altitude=indices)
     subset = subset.assign(thermal_top=(("time", "y", "x"), thermal_top.data))
     subset = subset.set_coords(["latitude", "longitude"])
     return subset
@@ -268,106 +279,6 @@ if __name__ == "__main__":
                 "thermal_height_above_ground",
             )
         )
-        # %% Compute weather map
-        altitudes_weathermap = [0, 500, 1000, 1600, 2000, 3000, 4000]
-        hours = [6, 9, 12, 15, 18, 21]
-        df_map = (
-            df.filter(
-                pl.col("altitude").is_in(altitudes_weathermap),
-                pl.col("time").dt.hour().is_in(hours),
-            )
-            .select(
-                "forecast_timestamp",
-                "time",
-                "longitude",
-                "latitude",
-                "altitude",
-                "air_temperature_ml",
-                "x_wind_ml",
-                "y_wind_ml",
-                "wind_speed",
-            )
-            .with_columns(
-                wind_direction=-pl.arctan2("y_wind_ml", "x_wind_ml").degrees() + 90
-            )
-        )
-        # df.group_by("forecast_timestamp", "time", "longitude", "latitude").agg()
-
-        target_hour = 12
-        altitude = 1000
-        df_plot = df_map.filter(
-            pl.col("time").dt.hour() == target_hour, pl.col("altitude") == altitude
-        )
-
-        # %%
-        import plotly.graph_objects as go
-        import numpy as np
-        from utils import interpolate_color
-
-        # Assume interpolate_color already exists as in app.py
-        # from app import interpolate_color
-
-        def plot_wind_map(df_plot):
-            # Extract data
-            lats = df_plot["latitude"].to_numpy()
-            lons = df_plot["longitude"].to_numpy()
-            wind_speeds = df_plot["wind_speed"].to_numpy()
-            wind_dirs = df_plot["wind_direction"].to_numpy()
-            air_temp = df_plot["air_temperature_ml"].to_numpy()
-
-            # Generate colors using your color interpolation logic
-            colors = [interpolate_color(s) for s in wind_speeds]
-
-            # Optionally, make arrow length proportional to wind speed (for visual encoding)
-            arrow_length = 0.05  # degrees; tune as needed
-
-            # Calculate arrow endpoint coordinates
-            u = wind_speeds * np.cos(np.radians(wind_dirs - 90)) * arrow_length
-            v = wind_speeds * np.sin(np.radians(wind_dirs - 90)) * arrow_length
-
-            fig = go.Figure()
-
-            # Plot arrows as lines
-            for x, y, dx, dy, color, speed, direction, temp in zip(
-                lons, lats, u, v, colors, wind_speeds, wind_dirs, air_temp
-            ):
-                fig.add_trace(
-                    go.Scattermapbox(
-                        lon=[x, x + dx],
-                        lat=[y, y + dy],
-                        mode="lines+markers",
-                        marker=dict(
-                            size=7,
-                            color=color,
-                        ),
-                        line=dict(color=color, width=2),
-                        hoverinfo="text",
-                        text=[
-                            f"Wind: {speed:.1f} m/s<br>Dir: {direction:.0f}°<br>Temp: {temp:.1f}°C"
-                        ]
-                        * 2,
-                        showlegend=False,
-                    )
-                )
-
-            # Set up the map
-            fig.update_layout(
-                mapbox=dict(
-                    style="open-street-map",
-                    center=dict(lat=np.mean(lats), lon=np.mean(lons)),
-                    zoom=6,
-                ),
-                margin={"r": 0, "t": 0, "l": 0, "b": 0},
-                height=600,
-                title="Wind Vector Map",
-            )
-
-            return fig
-
-            # Usage (assuming you have df_plot with proper polars-to-numpy conversion):
-            # st.plotly_chart(plot_wind_map(df_plot), use_container_width=True)
-
-        fig = plot_wind_map(df_plot.head(5))
         # %% categorize all points into a kommunenavn
         # Step 1: Read the GeoJSON file
         # hentet fra https://github.com/robhop/fylker-og-kommuner/blob/main/Kommuner-S.geojson
