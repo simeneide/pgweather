@@ -20,6 +20,7 @@ dependencies = [
     "dotenv>=0.9.9",
     "adbc-driver-manager>=1.5.0",
     "adbc-driver-postgresql>=1.5.0",
+    "pyarrow>=18.0.0",
     "geojson>=3.2.0",
     "pytz>=2025.1",
     "fastapi>=0.116.1",

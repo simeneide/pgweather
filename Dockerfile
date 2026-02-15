@@ -14,11 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgdal-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./requirements.txt
-RUN uv pip install --system -r requirements.txt
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-dev --frozen
 
 COPY . .
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "uvicorn src.web.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["sh", "-c", "uv run uvicorn src.web.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
