@@ -69,20 +69,27 @@ def compute_thermal_velocity(subset):
     buoyancy = g * thermal_temp_diff / T_env_K
 
     # Step 3: cumulative upward integral of buoyancy × dz  [m²/s²]
-    # Use per-gridpoint height_agl; diff along the altitude dimension gives dz.
-    height_agl = subset["height_agl"]  # dims: (altitude, y, x)
-    dz = height_agl.diff("altitude")  # spacing between consecutive levels
+    # Use xarray named-dimension operations so broadcasting is automatic
+    # regardless of dimension ordering (which can be (time, y, x, altitude)).
+    height_agl = subset["height_agl"]  # time-averaged, (altitude, y, x)
 
-    # Trapezoidal rule: average buoyancy of adjacent levels × dz
-    buoyancy_lower = buoyancy.isel(altitude=slice(None, -1))
-    buoyancy_upper = buoyancy.isel(altitude=slice(1, None))
-    # Use .values to avoid coordinate alignment issues
-    buoyancy_mid = 0.5 * (buoyancy_lower.values + buoyancy_upper.values)
-    integrand = buoyancy_mid * dz.values  # shape: (time, altitude-1, y, x)
+    # Trapezoidal rule: average buoyancy between adjacent levels × dz.
+    # shift(altitude=1) shifts values toward higher altitudes, filling the
+    # lowest level with NaN.
+    buoyancy_mid = 0.5 * (buoyancy + buoyancy.shift(altitude=1))
 
-    # Cumulative sum along the altitude axis
-    alt_axis = list(dz.dims).index("altitude")
-    cumulative_work = np.cumsum(integrand, axis=alt_axis)
+    # dz between consecutive altitude levels (xarray handles named dims)
+    dz = height_agl.diff("altitude")
+
+    # Both buoyancy_mid.isel(altitude=slice(1,None)) and dz have N-1 altitude
+    # levels but with mismatched altitude coordinates.  Overwrite dz's altitude
+    # coordinate to match buoyancy_mid's so xarray multiplies element-wise.
+    b_trimmed = buoyancy_mid.isel(altitude=slice(1, None))
+    dz_aligned = dz.assign_coords(altitude=b_trimmed.coords["altitude"])
+    integrand_da = b_trimmed * dz_aligned  # xarray handles broadcasting by dim name
+    alt_axis = list(integrand_da.dims).index("altitude")
+
+    cumulative_work = np.cumsum(integrand_da.values, axis=alt_axis)
 
     # Prepend a zero slice for the lowest altitude level (w=0 at ground)
     zero_shape = list(cumulative_work.shape)
