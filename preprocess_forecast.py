@@ -59,6 +59,50 @@ def find_latest_meps_file():
     return file_path
 
 
+def _compute_grid_rotation_angle(latitude, longitude):
+    """Compute the local grid rotation angle *alpha* (radians) for a Lambert grid.
+
+    Uses numpy finite differences on the 2-D lat/lon fields to determine how
+    the grid y-axis is rotated relative to true north at each point.  This is
+    the vectorised equivalent of the loop-based approach shown in the MET
+    Norway NWPdocs examples.
+
+    Parameters
+    ----------
+    latitude, longitude : xarray.DataArray
+        2-D arrays with dims (y, x).
+
+    Returns
+    -------
+    alpha_rad : numpy.ndarray
+        Rotation angle in **radians** with shape (y, x).  To convert grid-
+        relative (x_wind, y_wind) to geographic (u_east, v_north)::
+
+            u_east  = x_wind * cos(alpha) - y_wind * sin(alpha)
+            v_north = x_wind * sin(alpha) + y_wind * cos(alpha)
+    """
+    lat = latitude.values
+    lon = longitude.values
+
+    # Finite differences along the y-axis (grid "northward" direction).
+    # Use central differences for interior points and forward/backward at edges.
+    dlat_dy = np.gradient(lat, axis=0)  # change in latitude per y-step
+    dlon_dy = np.gradient(lon, axis=0)  # change in longitude per y-step
+
+    # Convert longitude difference to km-equivalent, accounting for latitude.
+    # At latitude phi, 1 degree of longitude ≈ cos(phi) × 1 degree of latitude
+    # in terms of great-circle distance, so we weight dlon accordingly.
+    cos_lat = np.cos(np.radians(lat))
+    dlon_dy_km = dlon_dy * cos_lat  # proportional to east-west km per y-step
+    dlat_dy_km = dlat_dy  # proportional to north-south km per y-step
+
+    # alpha = atan2(dlat_dy_km, dlon_dy_km) - 90°   (in radians)
+    # This gives the angle between the grid y-axis and true north.
+    alpha_rad = np.arctan2(dlat_dy_km, dlon_dy_km) - np.pi / 2
+
+    return alpha_rad
+
+
 def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=4000):
     """
     file_path=None
@@ -157,6 +201,19 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=4000):
     subset = subset.where(
         (subset.altitude >= altitude_min) & (subset.altitude <= altitude_max), drop=True
     ).squeeze()
+
+    # --- Grid rotation correction ---
+    # x_wind_ml and y_wind_ml are grid-relative (Lambert conformal conic),
+    # not geographic east/north.  Rotate them to true east/north using the
+    # local grid rotation angle alpha, computed from the lat/lon fields.
+    # Reference: https://github.com/metno/NWPdocs/wiki/FAQ#wind-direction-obtained-from-x-y-wind
+    alpha_rad = _compute_grid_rotation_angle(subset["latitude"], subset["longitude"])
+    cos_alpha = np.cos(alpha_rad)
+    sin_alpha = np.sin(alpha_rad)
+    x_wind_geo = subset["x_wind_ml"] * cos_alpha - subset["y_wind_ml"] * sin_alpha
+    y_wind_geo = subset["x_wind_ml"] * sin_alpha + subset["y_wind_ml"] * cos_alpha
+    subset["x_wind_ml"] = x_wind_geo
+    subset["y_wind_ml"] = y_wind_geo
 
     wind_speed = np.sqrt(subset["x_wind_ml"] ** 2 + subset["y_wind_ml"] ** 2)
     subset = subset.assign(wind_speed=(("time", "altitude", "y", "x"), wind_speed.data))
