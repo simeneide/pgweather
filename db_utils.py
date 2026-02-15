@@ -57,11 +57,17 @@ class Database:
         )
         return True
 
-    def execute_query(self, query: str) -> list | None:
+    def execute_query(self, query: str, timeout_ms: int = 300_000) -> list | None:
+        """Execute a raw SQL query with an explicit statement timeout.
+
+        *timeout_ms* defaults to 5 minutes (Supabase free-tier default is
+        often much shorter and causes DDL operations to fail).
+        """
         import psycopg2
 
         conn = psycopg2.connect(self.uri)
         cur = conn.cursor()
+        cur.execute(f"SET statement_timeout = '{timeout_ms}'")
         cur.execute(query)
         result = None
         try:
