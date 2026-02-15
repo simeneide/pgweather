@@ -3,3 +3,4 @@ forecasts/
 *.nc
 .venv/
 *.png
+backlog/
