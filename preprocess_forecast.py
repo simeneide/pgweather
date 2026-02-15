@@ -20,6 +20,108 @@ import takeoff_utils
 # from literature (Lenschow 1980, Allen 2006).  Tune against pilot vario data.
 ENTRAINMENT_FACTOR = 0.4
 
+# Solar elevation thresholds for thermal scaling (degrees).
+# Below SOLAR_MIN thermals are zero; above SOLAR_FULL they are at full strength.
+# Between the two values a linear ramp is applied.  These values approximate
+# the delay between sunrise and when surface heating is strong enough to
+# trigger usable thermals (typically 1-2 h after geometric sunrise).
+SOLAR_ELEV_MIN_DEG = 5.0
+SOLAR_ELEV_FULL_DEG = 15.0
+
+
+def solar_elevation(lat_deg, lon_deg, utc_time):
+    """Compute solar elevation angle (degrees) for arrays of lat/lon and time.
+
+    Uses the standard astronomical approximation (accurate to ~0.5°) with no
+    external dependencies.  Works with numpy arrays for vectorised evaluation.
+
+    Parameters
+    ----------
+    lat_deg, lon_deg : array-like
+        Latitude and longitude in degrees.
+    utc_time : datetime.datetime or array-like of datetime.datetime
+        UTC time(s).  If a single datetime is passed it is broadcast to all
+        lat/lon points.
+
+    Returns
+    -------
+    elevation_deg : numpy.ndarray
+        Solar elevation angle in degrees (negative = below horizon).
+    """
+    # Day of year and fractional hour
+    if isinstance(utc_time, (list, np.ndarray)):
+        doy = np.array([t.timetuple().tm_yday for t in utc_time], dtype=float)
+        hour_utc = np.array(
+            [t.hour + t.minute / 60.0 + t.second / 3600.0 for t in utc_time],
+            dtype=float,
+        )
+    else:
+        doy = float(utc_time.timetuple().tm_yday)
+        hour_utc = utc_time.hour + utc_time.minute / 60.0 + utc_time.second / 3600.0
+
+    # Solar declination (Spencer, 1971)
+    gamma = 2.0 * np.pi * (doy - 1) / 365.0
+    decl = (
+        0.006918
+        - 0.399912 * np.cos(gamma)
+        + 0.070257 * np.sin(gamma)
+        - 0.006758 * np.cos(2 * gamma)
+        + 0.000907 * np.sin(2 * gamma)
+        - 0.002697 * np.cos(3 * gamma)
+        + 0.00148 * np.sin(3 * gamma)
+    )
+
+    # Equation of time (minutes) — Spencer approximation
+    eqtime = 229.18 * (
+        0.000075
+        + 0.001868 * np.cos(gamma)
+        - 0.032077 * np.sin(gamma)
+        - 0.014615 * np.cos(2 * gamma)
+        - 0.04089 * np.sin(2 * gamma)
+    )
+
+    # Hour angle (radians)
+    lon_rad = np.radians(np.asarray(lon_deg, dtype=float))
+    solar_time = hour_utc * 60.0 + eqtime + np.degrees(lon_rad) * 4.0  # minutes
+    hour_angle = np.radians((solar_time / 4.0) - 180.0)
+
+    # Solar elevation
+    lat_rad = np.radians(np.asarray(lat_deg, dtype=float))
+    sin_elev = np.sin(lat_rad) * np.sin(decl) + np.cos(lat_rad) * np.cos(decl) * np.cos(
+        hour_angle
+    )
+    elevation_deg = np.degrees(np.arcsin(np.clip(sin_elev, -1, 1)))
+    return elevation_deg
+
+
+def solar_scaling_factor(lat_deg, lon_deg, utc_times):
+    """Return a scaling array (0-1) for each (time, y, x) based on solar elevation.
+
+    Thermals are zeroed when the sun is below ``SOLAR_ELEV_MIN_DEG`` and reach
+    full strength above ``SOLAR_ELEV_FULL_DEG``, with a linear ramp in between.
+
+    Parameters
+    ----------
+    lat_deg, lon_deg : numpy.ndarray
+        2-D arrays with shape (y, x).
+    utc_times : list[datetime.datetime]
+        One datetime per forecast time step.
+
+    Returns
+    -------
+    scale : numpy.ndarray
+        Shape (time, y, x) with values in [0, 1].
+    """
+    n_times = len(utc_times)
+    ny, nx = np.asarray(lat_deg).shape
+    scale = np.empty((n_times, ny, nx), dtype=float)
+    for i, t in enumerate(utc_times):
+        elev = solar_elevation(lat_deg, lon_deg, t)
+        # Linear ramp between min and full
+        s = (elev - SOLAR_ELEV_MIN_DEG) / (SOLAR_ELEV_FULL_DEG - SOLAR_ELEV_MIN_DEG)
+        scale[i] = np.clip(s, 0.0, 1.0)
+    return scale
+
 
 # %%
 def compute_thermal_temp_difference(subset):
@@ -69,9 +171,15 @@ def compute_thermal_velocity(subset):
     buoyancy = g * thermal_temp_diff / T_env_K
 
     # Step 3: cumulative upward integral of buoyancy × dz  [m²/s²]
-    # Use xarray named-dimension operations so broadcasting is automatic
-    # regardless of dimension ordering (which can be (time, y, x, altitude)).
+    # IMPORTANT: MEPS hybrid levels are ordered top-of-atmosphere first, so
+    # after swap_dims the altitude coordinate is *descending*.  We must sort
+    # ascending so that diff() gives positive dz and cumsum() integrates
+    # from the ground upward.
     height_agl = subset["height_agl"]  # time-averaged, (altitude, y, x)
+    original_alt_order = buoyancy.coords["altitude"].values.copy()
+
+    buoyancy = buoyancy.sortby("altitude")
+    height_agl = height_agl.sortby("altitude")
 
     # Trapezoidal rule: average buoyancy between adjacent levels × dz.
     # shift(altitude=1) shifts values toward higher altitudes, filling the
@@ -103,12 +211,19 @@ def compute_thermal_velocity(subset):
         2.0 * np.clip(cumulative_work, 0, None)
     )
 
-    # Wrap back into an xarray DataArray with original coords
+    # Wrap back into an xarray DataArray with sorted (ascending) coords
     thermal_velocity_da = xr.DataArray(
         thermal_velocity,
         dims=buoyancy.dims,
         coords=buoyancy.coords,
     )
+
+    # Restore original altitude ordering so the result aligns with the
+    # caller's dataset (which may still be descending).
+    thermal_velocity_da = thermal_velocity_da.reindex(altitude=original_alt_order)
+
+    # Also restore thermal_temp_diff to original ordering
+    thermal_temp_diff = thermal_temp_diff.reindex(altitude=original_alt_order)
 
     return thermal_velocity_da, thermal_temp_diff
 
@@ -125,15 +240,25 @@ def extract_timestamp(filename):
         return None
 
 
-def find_latest_meps_file():
+def find_latest_meps_file(date=None, run=None):
     # The MEPS dataset: https://github.com/metno/NWPdocs/wiki/MEPS-dataset
-    today = datetime.datetime.today()
+    today = date or datetime.datetime.today()
     catalog_url = f"https://thredds.met.no/thredds/catalog/meps25epsarchive/{today.year}/{today.month:02d}/{today.day:02d}/catalog.xml"
     file_url_base = f"https://thredds.met.no/thredds/dodsC/meps25epsarchive/{today.year}/{today.month:02d}/{today.day:02d}"
     # Get the datasets from the catalog
     catalog = TDSCatalog(catalog_url)
-    datasets = [s for s in catalog.datasets if "meps_det_ml" in s]
-    file_path = f"{file_url_base}/{sorted(datasets)[-1]}"
+    datasets = sorted([s for s in catalog.datasets if "meps_det_ml" in s])
+    if run is not None:
+        # Pick a specific model run, e.g. run="06" -> T06Z
+        target = f"T{run:02d}Z" if isinstance(run, int) else f"T{run}Z"
+        matches = [d for d in datasets if target in d]
+        if not matches:
+            raise ValueError(
+                f"No MEPS file matching run={run} on {today}. Available: {datasets}"
+            )
+        file_path = f"{file_url_base}/{matches[-1]}"
+    else:
+        file_path = f"{file_url_base}/{datasets[-1]}"
     return file_path
 
 
@@ -226,6 +351,7 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=4000):
         "time": f"{time_range}",
         "surface_geopotential": f"{time_range_sfc}[0:1:0]{y_range}{x_range}",
         "air_temperature_0m": f"{time_range}[0:1:0]{y_range}{x_range}",
+        "SFX_DSN_T_ISBA": f"{time_range}{y_range}{x_range}",
     }
     file_path_surf = f"{file_path.replace('meps_det_ml', 'meps_det_sfc')}?{','.join(f'{k}{v}' for k, v in surf_params.items())}"
 
@@ -237,6 +363,8 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=4000):
     subset["elevation"] = elevation
     air_temperature_0m = surf.air_temperature_0m.squeeze()
     subset["air_temperature_0m"] = air_temperature_0m
+    # Snow depth in metres (SURFEX ISBA scheme)
+    subset["snow_depth"] = surf["SFX_DSN_T_ISBA"]
 
     # subset.elevation.plot()
     def hybrid_to_height(ds):
@@ -297,6 +425,27 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=4000):
     subset = subset.assign(wind_speed=(("time", "altitude", "y", "x"), wind_speed.data))
 
     thermal_velocity_da, thermal_temp_diff_da = compute_thermal_velocity(subset)
+
+    # --- Solar scaling: suppress thermals when the sun is too low ---
+    # Real thermals require solar surface heating; the pure lapse-rate
+    # calculation can show instability at night (e.g. warm-air advection).
+    import pandas as pd
+
+    utc_times = pd.to_datetime(subset.time.values).to_pydatetime().tolist()
+    lat_vals = subset["latitude"].values  # (y, x)
+    lon_vals = subset["longitude"].values  # (y, x)
+    sun_scale = solar_scaling_factor(lat_vals, lon_vals, utc_times)  # (time, y, x)
+
+    # Broadcast (time, y, x) → (time, altitude, y, x) via xarray
+    sun_scale_da = xr.DataArray(
+        sun_scale,
+        dims=("time", "y", "x"),
+        coords={"time": subset.time},
+    )
+    thermal_velocity_da = thermal_velocity_da * sun_scale_da
+    # Also scale thermal_temp_diff so thermal_top is correctly suppressed at night
+    thermal_temp_diff_da = thermal_temp_diff_da * sun_scale_da
+
     subset["thermal_velocity"] = thermal_velocity_da
 
     # Find thermal top: highest altitude where thermal_temp_diff exceeds a
@@ -353,7 +502,27 @@ def subsample_lat_lon(dataset, lat_stride=2, lon_stride=2):
 
 
 if __name__ == "__main__":
-    dataset_file_path = find_latest_meps_file()
+    import argparse
+
+    arg_parser = argparse.ArgumentParser()
+    arg_parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Fetch forecast for a specific date (YYYY-MM-DD). Defaults to today.",
+    )
+    arg_parser.add_argument(
+        "--run",
+        type=str,
+        default=None,
+        help="Specific model run hour (e.g. 06, 09, 12). Defaults to latest available.",
+    )
+    args = arg_parser.parse_args()
+    target_date = (
+        datetime.datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else None
+    )
+
+    dataset_file_path = find_latest_meps_file(date=target_date, run=args.run)
     forecast_timestamp_str = extract_timestamp(dataset_file_path.split("/")[-1])
 
     from dateutil import parser
@@ -411,6 +580,7 @@ if __name__ == "__main__":
                 "thermal_velocity",
                 "thermal_top",
                 "thermal_height_above_ground",
+                "snow_depth",
             )
         )
         # %% categorize all points into a kommunenavn
@@ -453,6 +623,9 @@ if __name__ == "__main__":
         )[
             ["name", "longitude_takeoff", "latitude_takeoff", "longitude", "latitude"]
         ]  # ,'pge_link'
+        # Deduplicate: keep only one grid point per takeoff to avoid
+        # duplicate rows that break the windgram pivot.
+        takeoffs = takeoffs.drop_duplicates(subset="name")
         df_takeoffs = pl.DataFrame(takeoffs)
 
         takeoff_forecasts = (
@@ -469,12 +642,11 @@ if __name__ == "__main__":
         )
         # %%
 
-        # Save to db — use TRUNCATE+append to preserve indexes and avoid
-        # DROP TABLE timeouts on large indexed tables.
+        # Save to db — append new forecast data (old forecasts are kept).
         print("Save area forecast to db..")
-        db.replace_data(area_forecasts, "area_forecasts")
+        db.write(area_forecasts, "area_forecasts")
         print("saving detailed forecast to db...")
-        db.replace_data(point_forecasts, "detailed_forecasts")
+        db.write(point_forecasts, "detailed_forecasts")
         print(
             f"saved {len(point_forecasts)} point forecasts and {len(area_forecasts)} area forecasts to db."
         )

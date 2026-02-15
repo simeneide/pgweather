@@ -57,6 +57,38 @@ class Database:
         )
         return True
 
+    def replace_forecast(
+        self,
+        df: pl.DataFrame,
+        table_name: str,
+        forecast_timestamp: str,
+    ) -> bool:
+        """Replace rows for a specific forecast_timestamp, keeping other forecasts.
+
+        Deletes existing rows matching *forecast_timestamp* then appends *df*.
+        Falls back to creating the table if it doesn't exist yet.
+        """
+        import adbc_driver_postgresql.dbapi as pg_dbapi
+
+        table_exists = True
+        try:
+            with pg_dbapi.connect(self.uri) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"DELETE FROM {table_name} WHERE forecast_timestamp = '{forecast_timestamp}'"
+                    )
+                conn.commit()
+        except Exception:
+            table_exists = False
+
+        df.write_database(
+            table_name=table_name,
+            connection=self.uri,
+            engine="adbc",
+            if_table_exists="append" if table_exists else "replace",
+        )
+        return True
+
     def execute_query(self, query: str, timeout_ms: int = 300_000) -> list | None:
         """Execute a raw SQL query with an explicit statement timeout.
 

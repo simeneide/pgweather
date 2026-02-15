@@ -30,6 +30,12 @@ def _to_local(value: dt.datetime) -> dt.datetime:
     return value.astimezone(LOCAL_TZ)
 
 
+def _ensure_tz_utc(ts: dt.datetime) -> dt.datetime:
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=dt.timezone.utc)
+    return ts
+
+
 def _group_times_by_day(
     available_times: list[dt.datetime],
 ) -> dict[str, list[dt.datetime]]:
@@ -147,6 +153,8 @@ def create_dash_app() -> Dash:
                 dcc.Store(id="day-keys-store", data=day_keys),
                 dcc.Store(id="selected-time-store", data=default_time_iso),
                 dcc.Store(id="modal-open-store", data=False),
+                dcc.Store(id="debug-mode-store", data=False),
+                dcc.Store(id="forecast-ts-store", data=None),
                 # Hidden keyboard listener
                 html.Div(
                     id="keyboard-listener",
@@ -166,6 +174,18 @@ def create_dash_app() -> Dash:
                 # Map controls panel
                 html.Div(
                     [
+                        # Debug: forecast generation selector (hidden unless ?debug=1)
+                        html.Div(
+                            id="forecast-gen-wrapper",
+                            style={"display": "none"},
+                            children=[
+                                dcc.Dropdown(
+                                    id="forecast-gen-dropdown",
+                                    placeholder="Forecast generation...",
+                                    clearable=False,
+                                ),
+                            ],
+                        ),
                         # Day selector (also mirrored inside the modal)
                         dcc.RadioItems(
                             id="day-radio",
@@ -231,10 +251,19 @@ def create_dash_app() -> Dash:
                         "borderRadius": "12px",
                     },
                 ),
-                dcc.Graph(
-                    id="map-graph",
-                    config={"displayModeBar": False},
-                    style={"height": "75vh", "minHeight": "350px"},
+                dcc.Loading(
+                    id="map-loading",
+                    type="circle",
+                    overlay_style={
+                        "visibility": "visible",
+                        "opacity": 0.4,
+                        "filter": "blur(2px)",
+                    },
+                    children=dcc.Graph(
+                        id="map-graph",
+                        config={"displayModeBar": False},
+                        style={"height": "75vh", "minHeight": "350px"},
+                    ),
                 ),
                 # Summary / forecast info below map (clickable to reopen modal)
                 html.Div(
@@ -300,14 +329,23 @@ def create_dash_app() -> Dash:
                                     ],
                                 ),
                                 # Windgram graph
-                                dcc.Graph(
-                                    id="airgram-graph",
-                                    config={
-                                        "displayModeBar": False,
-                                        "scrollZoom": False,
-                                        "doubleClick": False,
-                                        "responsive": True,
+                                dcc.Loading(
+                                    id="airgram-loading",
+                                    type="circle",
+                                    overlay_style={
+                                        "visibility": "visible",
+                                        "opacity": 0.4,
+                                        "filter": "blur(2px)",
                                     },
+                                    children=dcc.Graph(
+                                        id="airgram-graph",
+                                        config={
+                                            "displayModeBar": False,
+                                            "scrollZoom": False,
+                                            "doubleClick": False,
+                                            "responsive": True,
+                                        },
+                                    ),
                                 ),
                             ],
                         ),
@@ -460,22 +498,102 @@ def create_dash_app() -> Dash:
         return current_time_iso
 
     # -------------------------------------------------------------------
-    # Location from URL query param (on initial load)
+    # URL query params on initial load: ?location=X and ?debug=1
     # -------------------------------------------------------------------
     @app.callback(
         Output("location-dropdown", "value", allow_duplicate=True),
+        Output("debug-mode-store", "data"),
+        Output("forecast-gen-wrapper", "style"),
+        Output("forecast-gen-dropdown", "options"),
+        Output("forecast-gen-dropdown", "value"),
         Input("url", "search"),
         State("location-dropdown", "value"),
+        State("forecast-gen-dropdown", "value"),
         prevent_initial_call=True,
     )
-    def location_from_query(search: str, current_value: str | None):
-        if not search:
-            return no_update
-        params = parse_qs(search.lstrip("?"))
-        location = params.get("location", [None])[0]
-        if location and location in forecast_service.get_takeoff_names():
-            return location
-        return no_update
+    def init_from_query(
+        search: str, current_value: str | None, current_gen_value: str | None
+    ):
+        location_out = no_update
+        debug_mode = no_update
+        gen_style = no_update
+        gen_options = no_update
+        gen_value = no_update
+
+        if search:
+            params = parse_qs(search.lstrip("?"))
+            location = params.get("location", [None])[0]
+            if location and location in forecast_service.get_takeoff_names():
+                location_out = location
+
+            if params.get("debug", [None])[0] == "1":
+                debug_mode = True
+                gen_style = {"display": "block"}
+                local_tz = ZoneInfo("Europe/Oslo")
+                timestamps = forecast_service.get_available_forecast_timestamps()
+                gen_options = [
+                    {
+                        "label": _ensure_tz_utc(ts)
+                        .astimezone(local_tz)
+                        .strftime("%Y-%m-%d %H:%M (local)"),
+                        "value": _ensure_tz_utc(ts).isoformat(),
+                    }
+                    for ts in timestamps
+                ]
+                # Only set value on first load (when no generation is selected yet)
+                if current_gen_value is None and gen_options:
+                    gen_value = gen_options[0]["value"]
+
+        return location_out, debug_mode, gen_style, gen_options, gen_value
+
+    # -------------------------------------------------------------------
+    # Forecast generation changed -> recompute days/times
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("forecast-ts-store", "data"),
+        Output("days-map-store", "data", allow_duplicate=True),
+        Output("day-keys-store", "data", allow_duplicate=True),
+        Output("day-radio", "options", allow_duplicate=True),
+        Output("modal-day-radio", "options", allow_duplicate=True),
+        Output("day-radio", "value", allow_duplicate=True),
+        Output("selected-time-store", "data", allow_duplicate=True),
+        Input("forecast-gen-dropdown", "value"),
+        State("debug-mode-store", "data"),
+        prevent_initial_call=True,
+    )
+    def on_forecast_gen_changed(gen_ts_iso, debug_mode):
+        if not debug_mode or not gen_ts_iso:
+            return (no_update,) * 7
+
+        forecast_ts = _from_iso(gen_ts_iso)
+        meta = forecast_service.load_metadata(forecast_ts=forecast_ts)
+        available_times = meta.available_times
+
+        days_map = _group_times_by_day(available_times)
+        day_keys = list(days_map.keys())
+        days_map_ser = {dk: [_to_iso(t) for t in ts] for dk, ts in days_map.items()}
+        day_radio_opts = [{"label": _day_label(dk), "value": dk} for dk in day_keys]
+
+        # Pick default day/time
+        now = dt.datetime.now(dt.timezone.utc)
+        default_day = min(
+            day_keys, key=lambda dk: abs((dt.date.fromisoformat(dk) - now.date()).days)
+        )
+        target_hour = 14
+        day_times = days_map[default_day]
+        default_time_iso = _to_iso(
+            min(day_times, key=lambda t: abs(_to_local(t).hour - target_hour))
+        )
+
+        return (
+            gen_ts_iso,
+            days_map_ser,
+            day_keys,
+            day_radio_opts,
+            day_radio_opts,
+            default_day,
+            default_time_iso,
+        )
 
     # -------------------------------------------------------------------
     # Location -> URL query param
@@ -506,6 +624,7 @@ def create_dash_app() -> Dash:
         Input("layer-radio", "data"),
         Input("zoom-slider", "data"),
         Input("altitude-slider", "data"),
+        Input("forecast-ts-store", "data"),
     )
     def update_figures(
         selected_time_iso: str,
@@ -513,7 +632,10 @@ def create_dash_app() -> Dash:
         _map_layer: str,
         zoom: int,
         altitude_max: int,
+        forecast_ts_iso: str | None,
     ):
+        forecast_ts = _from_iso(forecast_ts_iso) if forecast_ts_iso else None
+
         if not selected_time_iso:
             selected_time_iso = _to_iso(forecast_service.get_default_selected_time())
         selected_time_utc = _from_iso(selected_time_iso)
@@ -523,6 +645,7 @@ def create_dash_app() -> Dash:
             selected_time=selected_time_utc,
             selected_name=selected_name,
             zoom=zoom,
+            forecast_ts=forecast_ts,
         )
 
         # If no location selected, return empty airgram
@@ -531,7 +654,9 @@ def create_dash_app() -> Dash:
 
         # Build airgram for selected location
         day = selected_time_local.date()
-        forecast_hours = forecast_service.get_forecast_hours_for_day(selected_name, day)
+        forecast_hours = forecast_service.get_forecast_hours_for_day(
+            selected_name, day, forecast_ts=forecast_ts
+        )
         yr_entries = forecast_service.get_yr_weather_for_day(
             selected_name, day, restrict_to_hours=forecast_hours
         )
@@ -542,16 +667,17 @@ def create_dash_app() -> Dash:
             altitude_max=altitude_max,
             yr_entries=yr_entries,
             selected_hour=selected_time_local.hour,
+            forecast_ts=forecast_ts,
         )
 
-        summary = forecast_service.get_summary(selected_name, selected_time_utc)
-        latest_ts = forecast_service.get_latest_forecast_timestamp()
-        age_hours = (
-            dt.datetime.now(dt.timezone.utc) - latest_ts
-        ).total_seconds() / 3600
+        summary = forecast_service.get_summary(
+            selected_name, selected_time_utc, forecast_ts=forecast_ts
+        )
+        used_ts = forecast_ts or forecast_service.get_latest_forecast_timestamp()
+        age_hours = (dt.datetime.now(dt.timezone.utc) - used_ts).total_seconds() / 3600
         merged = (
             f"{summary} | Forecast updated "
-            f"{_to_local(latest_ts).strftime('%Y-%m-%d %H:%M')}"
+            f"{_to_local(used_ts).strftime('%Y-%m-%d %H:%M')}"
             f" local ({age_hours:.1f}h ago)"
         )
 

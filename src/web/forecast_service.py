@@ -77,19 +77,68 @@ def _get_latest_forecast_timestamp() -> dt.datetime:
     return ts
 
 
+def _ensure_tz_utc(ts: dt.datetime) -> dt.datetime:
+    """Ensure a datetime is timezone-aware (UTC)."""
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=dt.timezone.utc)
+    return ts
+
+
+# ---------------------------------------------------------------------------
+# Available forecast generations (for debug mode)
+# ---------------------------------------------------------------------------
+_FORECAST_TS_CACHE: CacheEntry[list[dt.datetime]] | None = None
+
+
+def get_available_forecast_timestamps() -> list[dt.datetime]:
+    """Return all distinct forecast_timestamps in the DB, newest first."""
+    global _FORECAST_TS_CACHE
+    if _FORECAST_TS_CACHE is not None and _FORECAST_TS_CACHE.is_fresh(
+        settings.data_ttl_seconds
+    ):
+        return _FORECAST_TS_CACHE.data
+
+    query = """
+    SELECT DISTINCT forecast_timestamp
+    FROM detailed_forecasts
+    ORDER BY forecast_timestamp DESC
+    """
+    df = _db.read(query)
+    timestamps = [
+        _ensure_tz_utc(t) for t in df.get_column("forecast_timestamp").to_list()
+    ]
+
+    _FORECAST_TS_CACHE = CacheEntry(
+        loaded_at=dt.datetime.now(dt.timezone.utc), data=timestamps
+    )
+    return timestamps
+
+
+def _resolve_forecast_ts(forecast_ts: Optional[dt.datetime] = None) -> dt.datetime:
+    """Return *forecast_ts* if given, otherwise the latest."""
+    if forecast_ts is not None:
+        return _ensure_tz_utc(forecast_ts)
+    return _get_latest_forecast_timestamp()
+
+
 # ---------------------------------------------------------------------------
 # Metadata query (layout init — dropdowns, time slider, day selector)
 # ---------------------------------------------------------------------------
-_META_CACHE: CacheEntry[ForecastMeta] | None = None
+_META_CACHE: dict[str, CacheEntry[ForecastMeta]] = {}
 
 
-def load_metadata() -> ForecastMeta:
+def load_metadata(
+    forecast_ts: Optional[dt.datetime] = None,
+) -> ForecastMeta:
     """Lightweight metadata for populating the UI — no full DataFrame load."""
-    global _META_CACHE
-    if _META_CACHE is not None and _META_CACHE.is_fresh(settings.data_ttl_seconds):
-        return _META_CACHE.data
+    resolved_ts = _resolve_forecast_ts(forecast_ts)
+    cache_key = resolved_ts.isoformat()
 
-    latest_ts = _get_latest_forecast_timestamp()
+    cached = _META_CACHE.get(cache_key)
+    if cached is not None and cached.is_fresh(settings.data_ttl_seconds):
+        return cached.data
+
+    latest_ts = resolved_ts
 
     # Available times
     times_query = f"""
@@ -134,7 +183,9 @@ def load_metadata() -> ForecastMeta:
         takeoff_options=takeoff_options,
         takeoffs=takeoffs_raw + areas_raw,
     )
-    _META_CACHE = CacheEntry(loaded_at=dt.datetime.now(dt.timezone.utc), data=meta)
+    _META_CACHE[cache_key] = CacheEntry(
+        loaded_at=dt.datetime.now(dt.timezone.utc), data=meta
+    )
     return meta
 
 
@@ -206,12 +257,15 @@ def get_default_selected_time() -> dt.datetime:
 _MAP_CACHE: dict[str, CacheEntry[pl.DataFrame]] = {}
 
 
-def load_map_data(selected_time: dt.datetime) -> pl.DataFrame:
+def load_map_data(
+    selected_time: dt.datetime,
+    forecast_ts: Optional[dt.datetime] = None,
+) -> pl.DataFrame:
     """Load data for map view: one row per (name, point_type) at *selected_time*.
 
     Returns a small DataFrame (~520 rows) with columns needed for the map.
     """
-    latest_ts = _get_latest_forecast_timestamp()
+    latest_ts = _resolve_forecast_ts(forecast_ts)
     cache_key = f"{latest_ts.isoformat()}|{selected_time.isoformat()}"
 
     cached = _MAP_CACHE.get(cache_key)
@@ -251,12 +305,16 @@ def load_map_data(selected_time: dt.datetime) -> pl.DataFrame:
 _WINDGRAM_CACHE: dict[str, CacheEntry[pl.DataFrame]] = {}
 
 
-def load_windgram_data(name: str, date: dt.date) -> pl.DataFrame:
+def load_windgram_data(
+    name: str,
+    date: dt.date,
+    forecast_ts: Optional[dt.datetime] = None,
+) -> pl.DataFrame:
     """Load all altitude data for a single location on a given day.
 
     Returns a DataFrame with ~294 rows (14 hours × 21 altitudes).
     """
-    latest_ts = _get_latest_forecast_timestamp()
+    latest_ts = _resolve_forecast_ts(forecast_ts)
     cache_key = f"{latest_ts.isoformat()}|{name}|{date.isoformat()}"
 
     cached = _WINDGRAM_CACHE.get(cache_key)
@@ -278,7 +336,7 @@ def load_windgram_data(name: str, date: dt.date) -> pl.DataFrame:
     SELECT time, altitude, elevation,
            air_temperature_ml, x_wind_ml, y_wind_ml,
            wind_speed, thermal_velocity, thermal_top,
-           thermal_height_above_ground
+           thermal_height_above_ground, snow_depth
     FROM detailed_forecasts
     WHERE forecast_timestamp = '{latest_ts.isoformat()}'
       AND name = '{name}'
@@ -353,9 +411,13 @@ def _fetch_yr_forecast(lat: float, lon: float) -> list[dict]:
     return entries
 
 
-def get_forecast_hours_for_day(name: str, day: dt.date) -> list[int]:
+def get_forecast_hours_for_day(
+    name: str,
+    day: dt.date,
+    forecast_ts: Optional[dt.datetime] = None,
+) -> list[int]:
     """Return the local hours that have MEPS forecast data for *name* on *day*."""
-    df = load_windgram_data(name, day)
+    df = load_windgram_data(name, day, forecast_ts=forecast_ts)
     if len(df) == 0:
         return []
     hours = (
@@ -432,8 +494,9 @@ def build_map_figure(
     selected_time: dt.datetime,
     selected_name: Optional[str],
     zoom: int,
+    forecast_ts: Optional[dt.datetime] = None,
 ) -> go.Figure:
-    map_df = load_map_data(selected_time)
+    map_df = load_map_data(selected_time, forecast_ts=forecast_ts)
 
     # Climb rate colorscale: 0–5 m/s
     thermal_colorscale = [
@@ -665,8 +728,11 @@ def build_airgram_figure(
     altitude_max: int,
     yr_entries: Optional[list[dict]] = None,
     selected_hour: Optional[int] = None,
+    forecast_ts: Optional[dt.datetime] = None,
 ) -> go.Figure:
-    location_data = load_windgram_data(target_name, selected_date)
+    location_data = load_windgram_data(
+        target_name, selected_date, forecast_ts=forecast_ts
+    )
 
     display_start_hour = 8
     display_end_hour = 21
@@ -936,6 +1002,34 @@ def build_airgram_figure(
             layer="above",
         )
 
+    # --- 6) Snow depth annotation at bottom of chart ---
+    if "snow_depth" in location_data.columns:
+        snow_vals = location_data.select("snow_depth").to_series().drop_nulls()
+        if len(snow_vals) > 0:
+            median_snow_m = float(snow_vals.median())
+            if median_snow_m > 0.01:  # >1 cm
+                snow_cm = median_snow_m * 100
+                snow_text = (
+                    f"\u2744\ufe0f {snow_cm:.0f} cm snow"
+                    if snow_cm >= 1
+                    else "\u2744\ufe0f <1 cm snow"
+                )
+                annotations.append(
+                    dict(
+                        x=0.01,
+                        y=0.01,
+                        xref="paper",
+                        yref="paper",
+                        text=f"<b>{snow_text}</b>",
+                        showarrow=False,
+                        font=dict(size=12, color="#4a90d9"),
+                        bgcolor="rgba(255,255,255,0.8)",
+                        borderpad=3,
+                        xanchor="left",
+                        yanchor="bottom",
+                    )
+                )
+
     # --- Layout ---
     fig.update_layout(
         height=450,
@@ -981,8 +1075,9 @@ def build_airgram_figure(
 def get_summary(
     selected_name: str,
     selected_time: dt.datetime,
+    forecast_ts: Optional[dt.datetime] = None,
 ) -> str:
-    map_df = load_map_data(selected_time)
+    map_df = load_map_data(selected_time, forecast_ts=forecast_ts)
     row = map_df.filter(
         (pl.col("point_type") != "area") & (pl.col("name") == selected_name)
     )
