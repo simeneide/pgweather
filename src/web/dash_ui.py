@@ -70,17 +70,12 @@ def _empty_airgram() -> go.Figure:
     return fig
 
 
-def create_dash_app() -> Dash:
-    app = Dash(
-        __name__,
-        title="Termikkvarselet",
-        update_title=None,
-        requests_pathname_prefix="/",
-        suppress_callback_exceptions=True,
-        assets_folder=str(_PROJECT_ROOT / "assets"),
-    )
-    app._favicon = "logo.png"
+def _compute_layout_defaults() -> dict[str, object]:
+    """Compute initial layout values from the forecast data.
 
+    This is called once per page load (via the function-based layout) so the
+    app can start listening immediately without waiting for the database.
+    """
     df = forecast_service.load_forecast_data()
     available_times = forecast_service.get_available_times(df)
     if not available_times:
@@ -92,7 +87,6 @@ def create_dash_app() -> Dash:
     names = [option["value"] for option in location_options]
     default_time = forecast_service.get_default_selected_time(df)
 
-    # Group available datetimes by local day
     days_map = _group_times_by_day(available_times)
     day_keys = list(days_map.keys())
 
@@ -100,245 +94,275 @@ def create_dash_app() -> Dash:
     if default_day not in day_keys:
         default_day = day_keys[0]
 
-    # Pre-select the time closest to 14:00 local within the default day
     target_hour = 14
     day_times = days_map[default_day]
     default_time_iso = _to_iso(
         min(day_times, key=lambda t: abs(_to_local(t).hour - target_hour))
     )
 
-    # Build day radio options
     day_radio_options = [{"label": _day_label(dk), "value": dk} for dk in day_keys]
-
-    # Serialize days_map for client-side use
     days_map_serialized = {dk: [_to_iso(t) for t in ts] for dk, ts in days_map.items()}
 
-    # ---------------------------------------------------------------
-    # Layout
-    # ---------------------------------------------------------------
-    app.layout = html.Div(
-        [
-            dcc.Location(id="url", refresh=False),
-            # Stores
-            dcc.Store(id="days-map-store", data=days_map_serialized),
-            dcc.Store(id="day-keys-store", data=day_keys),
-            dcc.Store(id="selected-time-store", data=default_time_iso),
-            dcc.Store(id="modal-open-store", data=False),
-            # Hidden keyboard listener
-            html.Div(
-                id="keyboard-listener",
-                tabIndex="0",
-                style={
-                    "position": "fixed",
-                    "top": 0,
-                    "left": 0,
-                    "width": "100%",
-                    "height": "100%",
-                    "zIndex": -1,
-                    "opacity": 0,
-                },
-                **{"data-dummy": ""},
-            ),
-            html.H1("Termikkvarselet"),
-            # Map controls panel
-            html.Div(
-                [
-                    # Day selector (also mirrored inside the modal)
-                    dcc.RadioItems(
-                        id="day-radio",
-                        options=day_radio_options,
-                        value=default_day,
-                        inline=True,
-                        className="pill-radio",
-                    ),
-                    # Hour +/- controls with current time display
-                    html.Div(
-                        [
-                            html.Button(
-                                "\u25c0",
-                                id="hour-prev-btn",
-                                n_clicks=0,
-                                className="hour-btn",
-                                title="Previous hour",
-                            ),
-                            html.Span(
-                                id="current-hour-label",
-                                style={
-                                    "minWidth": "56px",
-                                    "textAlign": "center",
-                                    "fontWeight": 600,
-                                    "fontSize": "14px",
-                                    "color": "#1e293b",
-                                },
-                            ),
-                            html.Button(
-                                "\u25b6",
-                                id="hour-next-btn",
-                                n_clicks=0,
-                                className="hour-btn",
-                                title="Next hour",
-                            ),
-                        ],
-                        style={
-                            "display": "flex",
-                            "alignItems": "center",
-                            "gap": "6px",
-                        },
-                    ),
-                    # Location search
-                    dcc.Dropdown(
-                        id="location-dropdown",
-                        options=location_options,
-                        value=None,
-                        clearable=True,
-                        placeholder="Search takeoff...",
-                    ),
-                    # Hidden stores for removed controls (keep callback inputs valid)
-                    dcc.Store(id="layer-radio", data="both"),
-                    dcc.Store(id="zoom-slider", data=6),
-                ],
-                style={
-                    "display": "grid",
-                    "gap": "8px",
-                    "maxWidth": "860px",
-                    "marginBottom": "8px",
-                    "padding": "10px 12px",
-                    "background": "#f5f8fb",
-                    "border": "1px solid #d9dee6",
-                    "borderRadius": "12px",
-                },
-            ),
-            dcc.Graph(
-                id="map-graph",
-                config={"displayModeBar": False},
-                style={"height": "75vh", "minHeight": "350px"},
-            ),
-            # Summary / forecast info below map (clickable to reopen modal)
-            html.Div(
-                id="summary-text",
-                n_clicks=0,
-                style={
-                    "margin": "6px 0 0 0",
-                    "color": "#888",
-                    "fontSize": "12px",
-                    "cursor": "pointer",
-                },
-                title="Click to open windgram",
-            ),
-            # --- Windgram modal overlay ---
-            html.Div(
-                id="modal-wrapper",
-                className="modal-wrapper hidden",
-                children=[
-                    html.Div(
-                        id="modal-backdrop",
-                        className="modal-backdrop-layer",
-                        n_clicks=0,
-                    ),
-                    html.Div(
-                        id="modal-content",
-                        className="modal-content",
-                        children=[
-                            html.Button(
-                                "\u00d7",
-                                id="modal-close-btn",
-                                className="modal-close-btn",
-                                n_clicks=0,
-                            ),
-                            # Modal header: location name + date pills
-                            html.Div(
-                                id="modal-header",
-                                className="modal-header",
-                                children=[
-                                    html.H2(
-                                        id="modal-title",
-                                        children="",
-                                        style={
-                                            "margin": "0 0 6px 0",
-                                            "fontSize": "1.1rem",
-                                            "fontWeight": 700,
-                                            "color": "#1e293b",
-                                            "paddingRight": "36px",
-                                        },
-                                    ),
-                                    # Day selector (synced with main page)
-                                    dcc.RadioItems(
-                                        id="modal-day-radio",
-                                        options=day_radio_options,
-                                        value=default_day,
-                                        inline=True,
-                                        className="pill-radio",
-                                    ),
-                                    # Fixed altitude (hidden)
-                                    dcc.Store(
-                                        id="altitude-slider",
-                                        data=3000,
-                                    ),
-                                ],
-                            ),
-                            # Windgram graph
-                            dcc.Graph(
-                                id="airgram-graph",
-                                config={
-                                    "displayModeBar": False,
-                                    "scrollZoom": False,
-                                    "doubleClick": False,
-                                    "responsive": True,
-                                },
-                            ),
-                        ],
-                    ),
-                ],
-            ),
-            # Attribution footer
-            html.Footer(
-                [
-                    html.Div(
-                        [
-                            html.Span("Hosted and maintained by "),
-                            html.A(
-                                "eide.ai",
-                                href="https://eide.ai",
-                                target="_blank",
-                            ),
-                        ],
-                    ),
-                    html.Div(
-                        [
-                            html.Span("Data: "),
-                            html.A(
-                                "MET Norway / MEPS",
-                                href="https://www.met.no/",
-                                target="_blank",
-                            ),
-                            html.Span(" | Weather symbols: "),
-                            html.A(
-                                "Yr",
-                                href="https://www.yr.no/",
-                                target="_blank",
-                            ),
-                            html.Span(" | Map: "),
-                            html.A(
-                                "OpenStreetMap",
-                                href="https://www.openstreetmap.org/copyright",
-                                target="_blank",
-                            ),
-                        ],
-                        style={"marginTop": "4px"},
-                    ),
-                ],
-                style={
-                    "marginTop": "24px",
-                    "paddingTop": "12px",
-                    "borderTop": "1px solid #e2e8f0",
-                    "fontSize": "11px",
-                    "color": "#999",
-                    "textAlign": "center",
-                },
-            ),
-        ],
-        style={"maxWidth": "1200px", "margin": "0 auto", "padding": "16px"},
+    return {
+        "location_options": location_options,
+        "names": names,
+        "default_day": default_day,
+        "default_time_iso": default_time_iso,
+        "day_radio_options": day_radio_options,
+        "days_map_serialized": days_map_serialized,
+        "day_keys": day_keys,
+    }
+
+
+def create_dash_app() -> Dash:
+    app = Dash(
+        __name__,
+        title="Termikkvarselet",
+        update_title=None,
+        requests_pathname_prefix="/",
+        suppress_callback_exceptions=True,
+        assets_folder=str(_PROJECT_ROOT / "assets"),
     )
+    app._favicon = "logo.png"
+
+    # ---------------------------------------------------------------
+    # Function-based layout: defers DB access to first page request
+    # so uvicorn can start listening immediately.
+    # ---------------------------------------------------------------
+    def serve_layout() -> html.Div:
+        defaults = _compute_layout_defaults()
+        location_options = defaults["location_options"]
+        default_day = defaults["default_day"]
+        default_time_iso = defaults["default_time_iso"]
+        day_radio_options = defaults["day_radio_options"]
+        days_map_serialized = defaults["days_map_serialized"]
+        day_keys = defaults["day_keys"]
+
+        return html.Div(
+            [
+                dcc.Location(id="url", refresh=False),
+                # Stores
+                dcc.Store(id="days-map-store", data=days_map_serialized),
+                dcc.Store(id="day-keys-store", data=day_keys),
+                dcc.Store(id="selected-time-store", data=default_time_iso),
+                dcc.Store(id="modal-open-store", data=False),
+                # Hidden keyboard listener
+                html.Div(
+                    id="keyboard-listener",
+                    tabIndex="0",
+                    style={
+                        "position": "fixed",
+                        "top": 0,
+                        "left": 0,
+                        "width": "100%",
+                        "height": "100%",
+                        "zIndex": -1,
+                        "opacity": 0,
+                    },
+                    **{"data-dummy": ""},
+                ),
+                html.H1("Termikkvarselet"),
+                # Map controls panel
+                html.Div(
+                    [
+                        # Day selector (also mirrored inside the modal)
+                        dcc.RadioItems(
+                            id="day-radio",
+                            options=day_radio_options,
+                            value=default_day,
+                            inline=True,
+                            className="pill-radio",
+                        ),
+                        # Hour +/- controls with current time display
+                        html.Div(
+                            [
+                                html.Button(
+                                    "\u25c0",
+                                    id="hour-prev-btn",
+                                    n_clicks=0,
+                                    className="hour-btn",
+                                    title="Previous hour",
+                                ),
+                                html.Span(
+                                    id="current-hour-label",
+                                    style={
+                                        "minWidth": "56px",
+                                        "textAlign": "center",
+                                        "fontWeight": 600,
+                                        "fontSize": "14px",
+                                        "color": "#1e293b",
+                                    },
+                                ),
+                                html.Button(
+                                    "\u25b6",
+                                    id="hour-next-btn",
+                                    n_clicks=0,
+                                    className="hour-btn",
+                                    title="Next hour",
+                                ),
+                            ],
+                            style={
+                                "display": "flex",
+                                "alignItems": "center",
+                                "gap": "6px",
+                            },
+                        ),
+                        # Location search
+                        dcc.Dropdown(
+                            id="location-dropdown",
+                            options=location_options,
+                            value=None,
+                            clearable=True,
+                            placeholder="Search takeoff...",
+                        ),
+                        # Hidden stores for removed controls (keep callback inputs valid)
+                        dcc.Store(id="layer-radio", data="both"),
+                        dcc.Store(id="zoom-slider", data=6),
+                    ],
+                    style={
+                        "display": "grid",
+                        "gap": "8px",
+                        "maxWidth": "860px",
+                        "marginBottom": "8px",
+                        "padding": "10px 12px",
+                        "background": "#f5f8fb",
+                        "border": "1px solid #d9dee6",
+                        "borderRadius": "12px",
+                    },
+                ),
+                dcc.Graph(
+                    id="map-graph",
+                    config={"displayModeBar": False},
+                    style={"height": "75vh", "minHeight": "350px"},
+                ),
+                # Summary / forecast info below map (clickable to reopen modal)
+                html.Div(
+                    id="summary-text",
+                    n_clicks=0,
+                    style={
+                        "margin": "6px 0 0 0",
+                        "color": "#888",
+                        "fontSize": "12px",
+                        "cursor": "pointer",
+                    },
+                    title="Click to open windgram",
+                ),
+                # --- Windgram modal overlay ---
+                html.Div(
+                    id="modal-wrapper",
+                    className="modal-wrapper hidden",
+                    children=[
+                        html.Div(
+                            id="modal-backdrop",
+                            className="modal-backdrop-layer",
+                            n_clicks=0,
+                        ),
+                        html.Div(
+                            id="modal-content",
+                            className="modal-content",
+                            children=[
+                                html.Button(
+                                    "\u00d7",
+                                    id="modal-close-btn",
+                                    className="modal-close-btn",
+                                    n_clicks=0,
+                                ),
+                                # Modal header: location name + date pills
+                                html.Div(
+                                    id="modal-header",
+                                    className="modal-header",
+                                    children=[
+                                        html.H2(
+                                            id="modal-title",
+                                            children="",
+                                            style={
+                                                "margin": "0 0 6px 0",
+                                                "fontSize": "1.1rem",
+                                                "fontWeight": 700,
+                                                "color": "#1e293b",
+                                                "paddingRight": "36px",
+                                            },
+                                        ),
+                                        # Day selector (synced with main page)
+                                        dcc.RadioItems(
+                                            id="modal-day-radio",
+                                            options=day_radio_options,
+                                            value=default_day,
+                                            inline=True,
+                                            className="pill-radio",
+                                        ),
+                                        # Fixed altitude (hidden)
+                                        dcc.Store(
+                                            id="altitude-slider",
+                                            data=3000,
+                                        ),
+                                    ],
+                                ),
+                                # Windgram graph
+                                dcc.Graph(
+                                    id="airgram-graph",
+                                    config={
+                                        "displayModeBar": False,
+                                        "scrollZoom": False,
+                                        "doubleClick": False,
+                                        "responsive": True,
+                                    },
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                # Attribution footer
+                html.Footer(
+                    [
+                        html.Div(
+                            [
+                                html.Span("Hosted and maintained by "),
+                                html.A(
+                                    "eide.ai",
+                                    href="https://eide.ai",
+                                    target="_blank",
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            [
+                                html.Span("Data: "),
+                                html.A(
+                                    "MET Norway / MEPS",
+                                    href="https://www.met.no/",
+                                    target="_blank",
+                                ),
+                                html.Span(" | Weather symbols: "),
+                                html.A(
+                                    "Yr",
+                                    href="https://www.yr.no/",
+                                    target="_blank",
+                                ),
+                                html.Span(" | Map: "),
+                                html.A(
+                                    "OpenStreetMap",
+                                    href="https://www.openstreetmap.org/copyright",
+                                    target="_blank",
+                                ),
+                            ],
+                            style={"marginTop": "4px"},
+                        ),
+                    ],
+                    style={
+                        "marginTop": "24px",
+                        "paddingTop": "12px",
+                        "borderTop": "1px solid #e2e8f0",
+                        "fontSize": "11px",
+                        "color": "#999",
+                        "textAlign": "center",
+                    },
+                ),
+            ],
+            style={"maxWidth": "1200px", "margin": "0 auto", "padding": "16px"},
+        )
+
+    app.layout = serve_layout
 
     # ===================================================================
     # Callbacks
@@ -448,7 +472,7 @@ def create_dash_app() -> Dash:
             return no_update
         params = parse_qs(search.lstrip("?"))
         location = params.get("location", [None])[0]
-        if location and location in names:
+        if location and location in forecast_service.get_takeoff_names():
             return location
         return no_update
 
