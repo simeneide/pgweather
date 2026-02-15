@@ -252,6 +252,59 @@ def get_default_selected_time() -> dt.datetime:
 
 
 # ---------------------------------------------------------------------------
+# Gridded wind query — single time step + altitude, full spatial grid
+# ---------------------------------------------------------------------------
+_GRID_WIND_CACHE: dict[str, CacheEntry[pl.DataFrame]] = {}
+
+# Available altitude levels in the gridded_forecasts table (metres AGL).
+# Must match GRID_ALTITUDES in preprocess_forecast.py.
+GRID_ALTITUDES = [0, 500, 1000, 1500, 2000, 3000]
+
+
+def load_grid_wind_data(
+    selected_time: dt.datetime,
+    altitude: float = 1000,
+    forecast_ts: Optional[dt.datetime] = None,
+) -> pl.DataFrame:
+    """Load gridded wind vectors for a specific time and altitude level.
+
+    Returns a DataFrame with one row per grid point, containing lat/lon and
+    wind components for rendering wind arrows on the map.
+    """
+    latest_ts = _resolve_forecast_ts(forecast_ts)
+    cache_key = f"{latest_ts.isoformat()}|{selected_time.isoformat()}|{altitude}"
+
+    cached = _GRID_WIND_CACHE.get(cache_key)
+    if cached is not None and cached.is_fresh(settings.data_ttl_seconds):
+        return cached.data
+
+    query = f"""
+    SELECT latitude, longitude, x_wind_ml, y_wind_ml, wind_speed,
+           thermal_velocity, thermal_top, elevation
+    FROM gridded_forecasts
+    WHERE forecast_timestamp = '{latest_ts.isoformat()}'
+      AND time = '{selected_time.isoformat()}'
+      AND altitude = {altitude}
+    """
+    try:
+        df = _db.read(query)
+    except Exception:
+        logger.warning("gridded_forecasts table not available yet")
+        df = pl.DataFrame()
+
+    # Evict stale entries
+    ts_prefix = latest_ts.isoformat()
+    stale_keys = [k for k in _GRID_WIND_CACHE if not k.startswith(ts_prefix)]
+    for k in stale_keys:
+        del _GRID_WIND_CACHE[k]
+
+    _GRID_WIND_CACHE[cache_key] = CacheEntry(
+        loaded_at=dt.datetime.now(dt.timezone.utc), data=df
+    )
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Map view query — single time step, all locations
 # ---------------------------------------------------------------------------
 _MAP_CACHE: dict[str, CacheEntry[pl.DataFrame]] = {}
@@ -495,6 +548,7 @@ def build_map_figure(
     selected_name: Optional[str],
     zoom: int,
     forecast_ts: Optional[dt.datetime] = None,
+    wind_altitude: Optional[float] = None,
 ) -> go.Figure:
     map_df = load_map_data(selected_time, forecast_ts=forecast_ts)
 
@@ -620,6 +674,106 @@ def build_map_figure(
             )
         )
 
+    # --- Wind overlay (gridded) ---
+    # Two traces only: (1) thin direction lines, (2) colored speed markers.
+    # At lower zoom levels we subsample to avoid clutter; at higher zoom
+    # we show the full grid.
+    if wind_altitude is not None:
+        grid_df = load_grid_wind_data(
+            selected_time, altitude=wind_altitude, forecast_ts=forecast_ts
+        )
+        if len(grid_df) > 0:
+            g_lat = grid_df.get_column("latitude").to_numpy()
+            g_lon = grid_df.get_column("longitude").to_numpy()
+            g_u = grid_df.get_column("x_wind_ml").to_numpy()
+            g_v = grid_df.get_column("y_wind_ml").to_numpy()
+            g_spd = grid_df.get_column("wind_speed").to_numpy()
+
+            # Drop NaN / near-zero
+            valid = np.isfinite(g_spd) & (g_spd > 0.1)
+            g_lat, g_lon = g_lat[valid], g_lon[valid]
+            g_u, g_v, g_spd = g_u[valid], g_v[valid], g_spd[valid]
+
+            # Adaptive thinning: the grid DB is already stride-3 (~7.5 km).
+            # At zoom ≤6 show every 2nd point (~15 km), zoom ≥7 show all.
+            if zoom <= 6:
+                thin = 2
+            else:
+                thin = 1
+            if thin > 1:
+                # Subsample based on spatial index (approx. regular grid)
+                keep = np.zeros(len(g_lat), dtype=bool)
+                dlat = 0.075 * thin  # degrees — base spacing ~0.075°
+                qi = (g_lat / dlat).astype(int)
+                qj = (g_lon / dlat).astype(int)
+                seen: set[tuple[int, int]] = set()
+                for idx in range(len(g_lat)):
+                    key = (qi[idx], qj[idx])
+                    if key not in seen:
+                        seen.add(key)
+                        keep[idx] = True
+                g_lat, g_lon = g_lat[keep], g_lon[keep]
+                g_u, g_v, g_spd = g_u[keep], g_v[keep], g_spd[keep]
+
+            # Arrow length adapts to zoom so arrows look proportional.
+            arrow_len_deg = 0.04 * (2 ** (zoom - 6))  # ~0.04° at z6, ~0.16° at z8
+            arrow_len_deg = min(arrow_len_deg, 0.15)
+            cos_lat = np.cos(np.radians(g_lat))
+            mag = np.maximum(g_spd, 0.01)
+            du = g_u / mag
+            dv = g_v / mag
+            tip_lat = g_lat + dv * arrow_len_deg
+            tip_lon = g_lon + du * arrow_len_deg / cos_lat
+
+            # --- Trace 1: direction lines (single trace, subtle) ---
+            n = len(g_lat)
+            seg_lat = np.empty(n * 3, dtype=object)
+            seg_lon = np.empty(n * 3, dtype=object)
+            seg_lat[0::3] = g_lat
+            seg_lat[1::3] = tip_lat
+            seg_lat[2::3] = None
+            seg_lon[0::3] = g_lon
+            seg_lon[1::3] = tip_lon
+            seg_lon[2::3] = None
+
+            fig.add_trace(
+                go.Scattermap(
+                    lat=seg_lat.tolist(),
+                    lon=seg_lon.tolist(),
+                    mode="lines",
+                    line=dict(width=1.5, color="rgba(40,40,60,0.4)"),
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+
+            # --- Trace 2: coloured speed dots with text labels ---
+            alt_label = "sfc" if wind_altitude == 0 else f"{int(wind_altitude)}m"
+            # Compass direction (meteorological: where wind comes FROM)
+            wind_dir_deg = (np.degrees(np.arctan2(-g_u, -g_v)) + 360) % 360
+            compass = [_deg_to_compass(d) for d in wind_dir_deg]
+
+            fig.add_trace(
+                go.Scattermap(
+                    lat=g_lat.tolist(),
+                    lon=g_lon.tolist(),
+                    mode="markers",
+                    marker=go.scattermap.Marker(
+                        size=6,
+                        color=[_wind_arrow_color(float(s)) for s in g_spd],
+                        opacity=0.85,
+                        symbol="circle",
+                        allowoverlap=True,
+                    ),
+                    hoverinfo="text",
+                    hovertext=[
+                        f"{spd:.0f} m/s from {c} ({alt_label})"
+                        for spd, c in zip(g_spd, compass)
+                    ],
+                    showlegend=False,
+                )
+            )
+
     fig.update_layout(
         map_style="open-street-map",
         map=dict(center=center, zoom=zoom),
@@ -701,6 +855,31 @@ def _wind_arrow_color(
         if wind_speed < thr:
             return colors[i]
     return colors[-1]
+
+
+_COMPASS_LABELS = [
+    "N",
+    "NNE",
+    "NE",
+    "ENE",
+    "E",
+    "ESE",
+    "SE",
+    "SSE",
+    "S",
+    "SSW",
+    "SW",
+    "WSW",
+    "W",
+    "WNW",
+    "NW",
+    "NNW",
+]
+
+
+def _deg_to_compass(deg: float) -> str:
+    """Convert meteorological wind direction (degrees) to compass label."""
+    return _COMPASS_LABELS[int((deg + 11.25) % 360 / 22.5)]
 
 
 # Thermal velocity colorscale: 0–5 m/s climb rate

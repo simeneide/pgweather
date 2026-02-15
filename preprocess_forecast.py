@@ -642,14 +642,67 @@ if __name__ == "__main__":
         )
         # %%
 
-        # Save to db — append new forecast data (old forecasts are kept).
-        print("Save area forecast to db..")
-        db.write(area_forecasts, "area_forecasts")
+        # Save to db — replace data for this forecast generation.
+        # (area_forecasts is no longer written; the web app only reads
+        # detailed_forecasts.  The old area_forecasts table can be dropped.)
         print("saving detailed forecast to db...")
-        db.write(point_forecasts, "detailed_forecasts")
-        print(
-            f"saved {len(point_forecasts)} point forecasts and {len(area_forecasts)} area forecasts to db."
+        db.replace_forecast(
+            point_forecasts, "detailed_forecasts", forecast_timestamp_str
         )
+        print(f"saved {len(point_forecasts)} point forecasts to db.")
+
+        # --- Gridded forecast output ----------------------------------------
+        # Store a subsampled spatial grid at selected altitude levels for
+        # wind-overlay maps and arbitrary-point windgrams.  Only the latest
+        # forecast generation is kept (full table replace).
+        GRID_STRIDE = 3  # every Nth grid point (~7.5 km at stride 3)
+        GRID_ALTITUDES = [0, 500, 1000, 1500, 2000, 3000]  # metres AGL
+
+        gridded_subset = subsample_lat_lon(
+            subset, lat_stride=GRID_STRIDE, lon_stride=GRID_STRIDE
+        )
+        gridded_interp = gridded_subset.interp(altitude=GRID_ALTITUDES, method="linear")
+
+        # The lowest model level is ~12-30 m AGL, so linear interpolation to
+        # altitude=0 produces NaN (extrapolation).  Back-fill along the
+        # ascending altitude dimension so altitude=0 gets the lowest available
+        # model-level values — a good proxy for surface wind.
+        for var in ["x_wind_ml", "y_wind_ml", "wind_speed"]:
+            if var in gridded_interp:
+                gridded_interp[var] = gridded_interp[var].bfill(dim="altitude")
+
+        grid_df = (
+            pl.DataFrame(gridded_interp.to_dataframe().reset_index())
+            .with_columns(
+                forecast_timestamp=pl.lit(forecast_timestamp_str).cast(pl.Datetime)
+            )
+            .select(
+                "forecast_timestamp",
+                "time",
+                "latitude",
+                "longitude",
+                "altitude",
+                "elevation",
+                "x_wind_ml",
+                "y_wind_ml",
+                "wind_speed",
+                "thermal_velocity",
+                "thermal_top",
+                "snow_depth",
+            )
+        )
+
+        print(f"saving {len(grid_df)} gridded forecast rows to db...")
+        db.replace_data(grid_df, "gridded_forecasts")
+        # Ensure indexes exist for efficient querying
+        try:
+            db.execute_query(
+                "CREATE INDEX IF NOT EXISTS idx_gridded_time_alt "
+                "ON gridded_forecasts (time, altitude)"
+            )
+        except Exception:
+            pass  # Index may already exist
+        print("gridded forecast saved.")
 
         # create_index_query = "CREATE INDEX idx_time_name ON weather_forecasts (time, longitude, latitude);"
         # res = db.execute_query(create_index_query)

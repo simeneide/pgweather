@@ -236,6 +236,23 @@ def create_dash_app() -> Dash:
                             clearable=True,
                             placeholder="Search takeoff...",
                         ),
+                        # Wind overlay altitude selector
+                        dcc.Dropdown(
+                            id="wind-altitude-dropdown",
+                            options=[
+                                {"label": "Wind off", "value": "off"},
+                                {"label": "Surface wind", "value": "0"},
+                                {"label": "Wind 500m", "value": "500"},
+                                {"label": "Wind 1000m", "value": "1000"},
+                                {"label": "Wind 1500m", "value": "1500"},
+                                {"label": "Wind 2000m", "value": "2000"},
+                                {"label": "Wind 3000m", "value": "3000"},
+                            ],
+                            value="off",
+                            clearable=False,
+                            searchable=False,
+                            style={"maxWidth": "160px"},
+                        ),
                         # Hidden stores for removed controls (keep callback inputs valid)
                         dcc.Store(id="layer-radio", data="both"),
                         dcc.Store(id="zoom-slider", data=6),
@@ -625,6 +642,8 @@ def create_dash_app() -> Dash:
         Input("zoom-slider", "data"),
         Input("altitude-slider", "data"),
         Input("forecast-ts-store", "data"),
+        Input("wind-altitude-dropdown", "value"),
+        State("map-graph", "relayoutData"),
     )
     def update_figures(
         selected_time_iso: str,
@@ -633,6 +652,8 @@ def create_dash_app() -> Dash:
         zoom: int,
         altitude_max: int,
         forecast_ts_iso: str | None,
+        wind_alt_value: str | None,
+        map_relayout: dict | None = None,
     ):
         forecast_ts = _from_iso(forecast_ts_iso) if forecast_ts_iso else None
 
@@ -641,11 +662,28 @@ def create_dash_app() -> Dash:
         selected_time_utc = _from_iso(selected_time_iso)
         selected_time_local = _to_local(selected_time_utc)
 
+        # Parse wind altitude: "off" or None means no overlay, else float
+        wind_altitude: float | None = None
+        if wind_alt_value and wind_alt_value != "off":
+            try:
+                wind_altitude = float(wind_alt_value)
+            except ValueError:
+                wind_altitude = None
+
+        # Use the actual map zoom if available from relayout data
+        effective_zoom = zoom
+        if map_relayout and "map.zoom" in map_relayout:
+            try:
+                effective_zoom = int(round(map_relayout["map.zoom"]))
+            except (TypeError, ValueError):
+                pass
+
         map_fig = forecast_service.build_map_figure(
             selected_time=selected_time_utc,
             selected_name=selected_name,
-            zoom=zoom,
+            zoom=effective_zoom,
             forecast_ts=forecast_ts,
+            wind_altitude=wind_altitude,
         )
 
         # If no location selected, return empty airgram
