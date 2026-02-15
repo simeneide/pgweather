@@ -1,8 +1,17 @@
+"""Forecast data loading, caching, and figure building.
+
+Data loading uses per-view queries instead of a monolithic bulk load:
+- ``load_metadata()``   — lightweight query for layout init (dropdowns, times)
+- ``load_map_data()``   — single time-step, all locations (map view)
+- ``load_windgram_data()`` — single location + day, all altitudes (airgram)
+"""
+
 from __future__ import annotations
 
 import datetime as dt
 import json
 import logging
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -14,34 +23,296 @@ import requests
 
 import db_utils
 
+from .config import settings
+from .models import (
+    CacheEntry,
+    ForecastMeta,
+    TakeoffInfo,
+    TakeoffOption,
+)
+
 logger = logging.getLogger(__name__)
 
-DATA_TTL_SECONDS = 600
-_CACHE: dict[str, object] = {"loaded_at": None, "df": None}
+# ---------------------------------------------------------------------------
+# Shared database helper
+# ---------------------------------------------------------------------------
+_db = db_utils.Database()
 
 # ---------------------------------------------------------------------------
 # Yr / MET Norway locationforecast
 # ---------------------------------------------------------------------------
-_YR_CACHE: dict[str, object] = {}  # key=(lat,lon) -> {"fetched_at": dt, "data": [...]}
-_YR_TTL_SECONDS = 1800  # 30 min cache per location
+_YR_CACHE: dict[str, CacheEntry[list[dict]]] = {}
 _YR_ICON_BASE = "https://raw.githubusercontent.com/metno/weathericons/main/weather/svg"
 _YR_ICON_PNG_BASE = (
     "https://raw.githubusercontent.com/metno/weathericons/main/weather/png"
 )
 _YR_USER_AGENT = "pgweather/1.0 github.com/simeneide/pgweather"
 
+# ---------------------------------------------------------------------------
+# Cached latest forecast timestamp (short TTL, shared across queries)
+# ---------------------------------------------------------------------------
+_TS_CACHE: CacheEntry[dt.datetime] | None = None
+
+
+def _get_latest_forecast_timestamp() -> dt.datetime:
+    """Return the latest forecast_timestamp, cached with short TTL."""
+    global _TS_CACHE
+    if _TS_CACHE is not None and _TS_CACHE.is_fresh(settings.data_ttl_seconds):
+        return _TS_CACHE.data
+
+    query = "SELECT max(forecast_timestamp) AS ts FROM detailed_forecasts"
+    row = _db.read(query)
+    ts = row[0, "ts"]
+    if ts is None:
+        raise RuntimeError("No forecasts in detailed_forecasts table")
+
+    # Ensure timezone-aware
+    if isinstance(ts, dt.datetime):
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=dt.timezone.utc)
+    else:
+        raise RuntimeError(f"Unexpected type for forecast_timestamp: {type(ts)}")
+
+    _TS_CACHE = CacheEntry(loaded_at=dt.datetime.now(dt.timezone.utc), data=ts)
+    return ts
+
+
+# ---------------------------------------------------------------------------
+# Metadata query (layout init — dropdowns, time slider, day selector)
+# ---------------------------------------------------------------------------
+_META_CACHE: CacheEntry[ForecastMeta] | None = None
+
+
+def load_metadata() -> ForecastMeta:
+    """Lightweight metadata for populating the UI — no full DataFrame load."""
+    global _META_CACHE
+    if _META_CACHE is not None and _META_CACHE.is_fresh(settings.data_ttl_seconds):
+        return _META_CACHE.data
+
+    latest_ts = _get_latest_forecast_timestamp()
+
+    # Available times
+    times_query = f"""
+    SELECT DISTINCT time
+    FROM detailed_forecasts
+    WHERE forecast_timestamp = '{latest_ts.isoformat()}'
+    ORDER BY time
+    """
+    times_df = _db.read(times_query)
+    available_times = [
+        t.replace(tzinfo=dt.timezone.utc) if t.tzinfo is None else t
+        for t in times_df.get_column("time").to_list()
+    ]
+
+    # Takeoff / area info — one row per name (areas may have multiple grid
+    # points; DISTINCT ON picks one representative lat/lon per name).
+    ref_time = max(available_times)
+    info_query = f"""
+    SELECT DISTINCT ON (name) name, latitude, longitude, point_type
+    FROM detailed_forecasts
+    WHERE forecast_timestamp = '{latest_ts.isoformat()}'
+      AND time = '{ref_time.isoformat()}'
+    ORDER BY name
+    """
+    info_df = _db.read(info_query)
+
+    takeoffs_raw = [
+        TakeoffInfo(**row)
+        for row in info_df.filter(pl.col("point_type") != "area").iter_rows(named=True)
+    ]
+    areas_raw = [
+        TakeoffInfo(**row)
+        for row in info_df.filter(pl.col("point_type") == "area").iter_rows(named=True)
+    ]
+
+    # Build dropdown options with region labels
+    takeoff_options = _build_takeoff_options(takeoffs_raw, areas_raw)
+
+    meta = ForecastMeta(
+        latest_forecast_timestamp=latest_ts,
+        available_times=available_times,
+        takeoff_options=takeoff_options,
+        takeoffs=takeoffs_raw + areas_raw,
+    )
+    _META_CACHE = CacheEntry(loaded_at=dt.datetime.now(dt.timezone.utc), data=meta)
+    return meta
+
+
+def _build_takeoff_options(
+    takeoffs: list[TakeoffInfo],
+    areas: list[TakeoffInfo],
+) -> list[TakeoffOption]:
+    """Build dropdown options, matching each takeoff to its nearest area label."""
+    if not takeoffs:
+        return []
+
+    sorted_takeoffs = sorted(takeoffs, key=lambda t: t.name)
+
+    if not areas:
+        return [TakeoffOption(label=t.name, value=t.name) for t in sorted_takeoffs]
+
+    area_names = np.array([a.name for a in areas])
+    area_lat = np.array([a.latitude for a in areas])
+    area_lon = np.array([a.longitude for a in areas])
+    max_dist2 = 0.25  # ~50 km
+
+    options: list[TakeoffOption] = []
+    for t in sorted_takeoffs:
+        if "(" in t.name:
+            options.append(TakeoffOption(label=t.name, value=t.name))
+            continue
+        dist2 = (area_lat - t.latitude) ** 2 + (area_lon - t.longitude) ** 2
+        min_dist2 = float(np.min(dist2))
+        if min_dist2 > max_dist2:
+            options.append(TakeoffOption(label=t.name, value=t.name))
+        else:
+            idx = int(np.argmin(dist2))
+            region = str(area_names[idx])
+            options.append(TakeoffOption(label=f"{t.name} ({region})", value=t.name))
+    return options
+
+
+# ---------------------------------------------------------------------------
+# Convenience accessors (used by dash_ui and main)
+# ---------------------------------------------------------------------------
+
+
+def get_latest_forecast_timestamp() -> dt.datetime:
+    return _get_latest_forecast_timestamp()
+
+
+def get_available_times() -> list[dt.datetime]:
+    return load_metadata().available_times
+
+
+def get_takeoff_options() -> list[dict[str, str]]:
+    """Return takeoff options as plain dicts for Dash dropdown compatibility."""
+    return [opt.model_dump() for opt in load_metadata().takeoff_options]
+
+
+def get_takeoff_names() -> list[str]:
+    return sorted(t.name for t in load_metadata().takeoffs if t.point_type != "area")
+
+
+def get_default_selected_time() -> dt.datetime:
+    times = get_available_times()
+    now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
+    return min(times, key=lambda t: abs((t - now).total_seconds()))
+
+
+# ---------------------------------------------------------------------------
+# Map view query — single time step, all locations
+# ---------------------------------------------------------------------------
+_MAP_CACHE: dict[str, CacheEntry[pl.DataFrame]] = {}
+
+
+def load_map_data(selected_time: dt.datetime) -> pl.DataFrame:
+    """Load data for map view: one row per (name, point_type) at *selected_time*.
+
+    Returns a small DataFrame (~520 rows) with columns needed for the map.
+    """
+    latest_ts = _get_latest_forecast_timestamp()
+    cache_key = f"{latest_ts.isoformat()}|{selected_time.isoformat()}"
+
+    cached = _MAP_CACHE.get(cache_key)
+    if cached is not None and cached.is_fresh(settings.data_ttl_seconds):
+        return cached.data
+
+    # One row per name — pick the lowest altitude for each name using
+    # DISTINCT ON. thermal_top is the same at all altitudes for a given
+    # (name, time) but wind_speed varies; lowest altitude gives surface wind.
+    query = f"""
+    SELECT DISTINCT ON (name)
+           name, latitude, longitude, point_type,
+           thermal_top, wind_speed
+    FROM detailed_forecasts
+    WHERE forecast_timestamp = '{latest_ts.isoformat()}'
+      AND time = '{selected_time.isoformat()}'
+    ORDER BY name, altitude
+    """
+    df = _db.read(query)
+
+    # Evict old entries (keep only current forecast_timestamp)
+    ts_prefix = latest_ts.isoformat()
+    stale_keys = [k for k in _MAP_CACHE if not k.startswith(ts_prefix)]
+    for k in stale_keys:
+        del _MAP_CACHE[k]
+
+    _MAP_CACHE[cache_key] = CacheEntry(
+        loaded_at=dt.datetime.now(dt.timezone.utc), data=df
+    )
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Windgram query — single location + day, all altitudes
+# ---------------------------------------------------------------------------
+_WINDGRAM_CACHE: dict[str, CacheEntry[pl.DataFrame]] = {}
+
+
+def load_windgram_data(name: str, date: dt.date) -> pl.DataFrame:
+    """Load all altitude data for a single location on a given day.
+
+    Returns a DataFrame with ~294 rows (14 hours × 21 altitudes).
+    """
+    latest_ts = _get_latest_forecast_timestamp()
+    cache_key = f"{latest_ts.isoformat()}|{name}|{date.isoformat()}"
+
+    cached = _WINDGRAM_CACHE.get(cache_key)
+    if cached is not None and cached.is_fresh(settings.data_ttl_seconds):
+        return cached.data
+
+    # Date filtering: convert time to Europe/Oslo and filter by date
+    # Since we can't do TZ conversion in the SQL query on all Postgres setups,
+    # we compute the UTC range for the local date.
+    local_tz = ZoneInfo("Europe/Oslo")
+    day_start_local = dt.datetime.combine(date, dt.time.min, tzinfo=local_tz)
+    day_end_local = dt.datetime.combine(
+        date + dt.timedelta(days=1), dt.time.min, tzinfo=local_tz
+    )
+    day_start_utc = day_start_local.astimezone(dt.timezone.utc)
+    day_end_utc = day_end_local.astimezone(dt.timezone.utc)
+
+    query = f"""
+    SELECT time, altitude, elevation,
+           air_temperature_ml, x_wind_ml, y_wind_ml,
+           wind_speed, thermal_temp_diff, thermal_top,
+           thermal_height_above_ground
+    FROM detailed_forecasts
+    WHERE forecast_timestamp = '{latest_ts.isoformat()}'
+      AND name = '{name}'
+      AND point_type = 'takeoff'
+      AND time >= '{day_start_utc.isoformat()}'
+      AND time < '{day_end_utc.isoformat()}'
+    ORDER BY time, altitude
+    """
+    df = _db.read(query).with_columns(
+        pl.col("time").cast(pl.Datetime).dt.replace_time_zone("UTC"),
+    )
+
+    # Evict stale entries
+    ts_prefix = latest_ts.isoformat()
+    stale_keys = [k for k in _WINDGRAM_CACHE if not k.startswith(ts_prefix)]
+    for k in stale_keys:
+        del _WINDGRAM_CACHE[k]
+
+    _WINDGRAM_CACHE[cache_key] = CacheEntry(
+        loaded_at=dt.datetime.now(dt.timezone.utc), data=df
+    )
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Yr / MET Norway locationforecast
+# ---------------------------------------------------------------------------
+
 
 def _fetch_yr_forecast(lat: float, lon: float) -> list[dict]:
     """Fetch compact locationforecast from MET Norway and return hourly entries."""
     cache_key = f"{lat:.4f},{lon:.4f}"
-    now = dt.datetime.now(dt.timezone.utc)
     cached = _YR_CACHE.get(cache_key)
-    if (
-        cached
-        and isinstance(cached.get("fetched_at"), dt.datetime)
-        and (now - cached["fetched_at"]).total_seconds() < _YR_TTL_SECONDS
-    ):
-        return cached["data"]
+    if cached is not None and cached.is_fresh(settings.yr_ttl_seconds):
+        return cached.data
 
     url = (
         f"https://api.met.no/weatherapi/locationforecast/2.0/compact"
@@ -54,7 +325,7 @@ def _fetch_yr_forecast(lat: float, lon: float) -> list[dict]:
     except Exception:
         logger.exception("Failed to fetch Yr forecast for %s,%s", lat, lon)
         if cached:
-            return cached["data"]
+            return cached.data
         return []
 
     entries: list[dict] = []
@@ -75,22 +346,19 @@ def _fetch_yr_forecast(lat: float, lon: float) -> list[dict]:
             }
         )
 
-    _YR_CACHE[cache_key] = {"fetched_at": now, "data": entries}
+    _YR_CACHE[cache_key] = CacheEntry(
+        loaded_at=dt.datetime.now(dt.timezone.utc), data=entries
+    )
     return entries
 
 
-def get_forecast_hours_for_day(
-    name: str, day: dt.date, df: Optional[pl.DataFrame] = None
-) -> list[int]:
+def get_forecast_hours_for_day(name: str, day: dt.date) -> list[int]:
     """Return the local hours that have MEPS forecast data for *name* on *day*."""
-    frame = df if df is not None else load_forecast_data()
+    df = load_windgram_data(name, day)
+    if len(df) == 0:
+        return []
     hours = (
-        frame.with_columns(time=pl.col("time").dt.convert_time_zone("Europe/Oslo"))
-        .filter(
-            (pl.col("time").dt.date() == day),
-            pl.col("name") == name,
-            pl.col("point_type") != "area",
-        )
+        df.with_columns(time=pl.col("time").dt.convert_time_zone("Europe/Oslo"))
         .select(pl.col("time").dt.hour().alias("hour"))
         .unique()
         .sort("hour")
@@ -103,30 +371,18 @@ def get_forecast_hours_for_day(
 def get_yr_weather_for_day(
     name: str,
     day: dt.date,
-    df: Optional[pl.DataFrame] = None,
     restrict_to_hours: Optional[list[int]] = None,
 ) -> list[dict]:
-    """Return Yr hourly weather for *name* on *day* (local time).
-
-    If *restrict_to_hours* is given, only return entries whose local hour
-    is in that list (used to sync Yr strip with MEPS forecast hours).
-    """
-    from zoneinfo import ZoneInfo
-
+    """Return Yr hourly weather for *name* on *day* (local time)."""
     local_tz = ZoneInfo("Europe/Oslo")
-    frame = df if df is not None else load_forecast_data()
+    meta = load_metadata()
 
     # Look up lat/lon for this takeoff
-    loc = (
-        frame.filter((pl.col("point_type") != "area") & (pl.col("name") == name))
-        .select("latitude", "longitude")
-        .unique()
-        .head(1)
-    )
-    if len(loc) == 0:
+    loc = [t for t in meta.takeoffs if t.name == name and t.point_type != "area"]
+    if not loc:
         return []
-    lat = float(loc[0, "latitude"])
-    lon = float(loc[0, "longitude"])
+    lat = loc[0].latitude
+    lon = loc[0].longitude
 
     entries = _fetch_yr_forecast(lat, lon)
     if not entries:
@@ -154,133 +410,29 @@ def get_yr_weather_for_day(
     return result
 
 
+# ---------------------------------------------------------------------------
+# GeoJSON — loaded once (immutable at runtime)
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=1)
 def _load_geojson() -> dict:
     geojson_path = Path(__file__).resolve().parents[2] / "Kommuner-S.geojson"
     with geojson_path.open("r", encoding="utf-8") as file:
         return json.load(file)
 
 
-def load_forecast_data(force_refresh: bool = False) -> pl.DataFrame:
-    now = dt.datetime.now(dt.timezone.utc)
-    loaded_at = _CACHE["loaded_at"]
-    cached_df = _CACHE["df"]
-
-    if (
-        (not force_refresh)
-        and isinstance(loaded_at, dt.datetime)
-        and isinstance(cached_df, pl.DataFrame)
-        and (now - loaded_at).total_seconds() < DATA_TTL_SECONDS
-    ):
-        return cached_df
-
-    db = db_utils.Database()
-    query = """
-    select *
-    from detailed_forecasts
-    where forecast_timestamp = (
-      select max(forecast_timestamp) from detailed_forecasts
-    )
-    """
-    df = db.read(query).with_columns(
-        [
-            pl.col("forecast_timestamp").cast(pl.Datetime).dt.replace_time_zone("UTC"),
-            pl.col("time").cast(pl.Datetime).dt.replace_time_zone("UTC"),
-        ]
-    )
-    _CACHE["loaded_at"] = now
-    _CACHE["df"] = df
-    return df
-
-
-def get_latest_forecast_timestamp(df: Optional[pl.DataFrame] = None) -> dt.datetime:
-    frame = df if df is not None else load_forecast_data()
-    return frame.get_column("forecast_timestamp").max()
-
-
-def get_available_times(df: Optional[pl.DataFrame] = None) -> list[dt.datetime]:
-    frame = df if df is not None else load_forecast_data()
-    return frame.get_column("time").unique().sort().to_list()
-
-
-def get_takeoff_names(df: Optional[pl.DataFrame] = None) -> list[str]:
-    frame = df if df is not None else load_forecast_data()
-    return (
-        frame.filter(pl.col("point_type") != "area")
-        .get_column("name")
-        .unique()
-        .sort()
-        .to_list()
-    )
-
-
-def get_takeoff_options(df: Optional[pl.DataFrame] = None) -> list[dict[str, str]]:
-    frame = df if df is not None else load_forecast_data()
-    reference_time = frame.get_column("time").max()
-
-    takeoffs = (
-        frame.filter(
-            (pl.col("point_type") != "area") & (pl.col("time") == reference_time)
-        )
-        .select("name", "latitude", "longitude")
-        .unique("name")
-        .sort("name")
-    )
-    areas = (
-        frame.filter(
-            (pl.col("point_type") == "area") & (pl.col("time") == reference_time)
-        )
-        .select("name", "latitude", "longitude")
-        .unique("name")
-    )
-
-    if len(takeoffs) == 0:
-        return []
-    if len(areas) == 0:
-        return [
-            {"label": name, "value": name}
-            for name in takeoffs.get_column("name").to_list()
-        ]
-
-    area_names = areas.get_column("name").to_numpy()
-    area_lat = areas.get_column("latitude").to_numpy()
-    area_lon = areas.get_column("longitude").to_numpy()
-
-    # Max squared distance (~0.5 deg ≈ 50 km) beyond which we skip region label
-    max_dist2 = 0.25
-
-    options: list[dict[str, str]] = []
-    for row in takeoffs.iter_rows(named=True):
-        name = str(row["name"])
-        # Skip region if the name already contains parentheses (has its own qualifier)
-        if "(" in name:
-            options.append({"label": name, "value": name})
-            continue
-        dist2 = (area_lat - row["latitude"]) ** 2 + (area_lon - row["longitude"]) ** 2
-        min_dist2 = float(np.min(dist2))
-        if min_dist2 > max_dist2:
-            # Too far from any area — don't add a misleading region
-            options.append({"label": name, "value": name})
-        else:
-            idx = int(np.argmin(dist2))
-            region = str(area_names[idx])
-            options.append({"label": f"{name} ({region})", "value": name})
-    return options
-
-
-def get_default_selected_time(df: Optional[pl.DataFrame] = None) -> dt.datetime:
-    frame = df if df is not None else load_forecast_data()
-    times = get_available_times(frame)
-    now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
-    return min(times, key=lambda t: abs((t - now).total_seconds()))
+# ---------------------------------------------------------------------------
+# Map figure builder
+# ---------------------------------------------------------------------------
 
 
 def build_map_figure(
     selected_time: dt.datetime,
     selected_name: Optional[str],
     zoom: int,
-    df: Optional[pl.DataFrame] = None,
 ) -> go.Figure:
-    frame = df if df is not None else load_forecast_data()
+    map_df = load_map_data(selected_time)
 
     thermal_colorscale = [
         (0.0, "grey"),
@@ -294,9 +446,7 @@ def build_map_figure(
     geojson = _load_geojson()
 
     # Kommune choropleth — transparent colored polygons for area-level thermal top
-    subset_area = frame.filter(
-        (pl.col("time") == selected_time) & (pl.col("point_type") == "area")
-    )
+    subset_area = map_df.filter(pl.col("point_type") == "area")
     if len(subset_area) > 0:
         area_names = subset_area.get_column("name").to_numpy()
         area_thermal_top = subset_area.get_column("thermal_top").to_numpy().round()
@@ -322,9 +472,7 @@ def build_map_figure(
         )
 
     center = {"lat": 61.2, "lon": 8.0}
-    subset_points = frame.filter(
-        (pl.col("time") == selected_time) & (pl.col("point_type") != "area")
-    )
+    subset_points = map_df.filter(pl.col("point_type") != "area")
     if len(subset_points) > 0:
         lat = subset_points.get_column("latitude").to_numpy()
         lon = subset_points.get_column("longitude").to_numpy()
@@ -461,6 +609,11 @@ def build_map_figure(
     return fig
 
 
+# ---------------------------------------------------------------------------
+# Wind arrow color
+# ---------------------------------------------------------------------------
+
+
 def _wind_arrow_color(
     wind_speed: float,
     thresholds: tuple[float, ...] = (2, 4, 6, 8, 12),
@@ -494,24 +647,26 @@ _THERMAL_COLORSCALE = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Airgram figure builder
+# ---------------------------------------------------------------------------
+
+
 def build_airgram_figure(
     target_name: str,
     selected_date: dt.date,
     altitude_max: int,
     yr_entries: Optional[list[dict]] = None,
     selected_hour: Optional[int] = None,
-    df: Optional[pl.DataFrame] = None,
 ) -> go.Figure:
-    frame = df if df is not None else load_forecast_data()
+    location_data = load_windgram_data(target_name, selected_date)
+
     display_start_hour = 8
     display_end_hour = 21
-    location_data = frame.with_columns(
+    location_data = location_data.with_columns(
         time=pl.col("time").dt.convert_time_zone("Europe/Oslo")
     ).filter(
-        (pl.col("time").dt.date() == selected_date),
         (pl.col("time").dt.hour().is_between(display_start_hour, display_end_hour)),
-        pl.col("name") == target_name,
-        pl.col("point_type") != "area",
     )
 
     if len(location_data) == 0:
@@ -812,26 +967,23 @@ def build_airgram_figure(
     return fig
 
 
+# ---------------------------------------------------------------------------
+# Summary text
+# ---------------------------------------------------------------------------
+
+
 def get_summary(
     selected_name: str,
     selected_time: dt.datetime,
-    df: Optional[pl.DataFrame] = None,
 ) -> str:
-    frame = df if df is not None else load_forecast_data()
-    selected = (
-        frame.filter(
-            (pl.col("point_type") != "area")
-            & (pl.col("name") == selected_name)
-            & (pl.col("time") == selected_time)
-            & (pl.col("altitude") <= 1000)
-        )
-        .sort("altitude", descending=True)
-        .head(1)
+    map_df = load_map_data(selected_time)
+    row = map_df.filter(
+        (pl.col("point_type") != "area") & (pl.col("name") == selected_name)
     )
-    if len(selected) == 0:
+    if len(row) == 0:
         return "No detailed point data for current selection."
     return (
-        f"Selected: {selected[0, 'name']} | Time: {selected_time} UTC | "
-        f"Thermal top: {selected[0, 'thermal_top']:.0f} m | "
-        f"Wind: {selected[0, 'wind_speed']:.1f} m/s"
+        f"Selected: {row[0, 'name']} | Time: {selected_time} UTC | "
+        f"Thermal top: {row[0, 'thermal_top']:.0f} m | "
+        f"Wind: {row[0, 'wind_speed']:.1f} m/s"
     )

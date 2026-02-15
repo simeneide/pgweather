@@ -71,21 +71,22 @@ def _empty_airgram() -> go.Figure:
 
 
 def _compute_layout_defaults() -> dict[str, object]:
-    """Compute initial layout values from the forecast data.
+    """Compute initial layout values from the forecast metadata.
 
-    This is called once per page load (via the function-based layout) so the
-    app can start listening immediately without waiting for the database.
+    Uses the lightweight ``load_metadata()`` query — no full DataFrame load.
+    Called once per page load (via the function-based layout) so the app can
+    start listening immediately without waiting for the database.
     """
-    df = forecast_service.load_forecast_data()
-    available_times = forecast_service.get_available_times(df)
+    meta = forecast_service.load_metadata()
+    available_times = meta.available_times
     if not available_times:
         raise RuntimeError("No forecast data available in detailed_forecasts")
 
-    location_options = forecast_service.get_takeoff_options(df)
+    location_options = forecast_service.get_takeoff_options()
     if not location_options:
         raise RuntimeError("No takeoff locations available")
     names = [option["value"] for option in location_options]
-    default_time = forecast_service.get_default_selected_time(df)
+    default_time = forecast_service.get_default_selected_time()
 
     days_map = _group_times_by_day(available_times)
     day_keys = list(days_map.keys())
@@ -517,13 +518,11 @@ def create_dash_app() -> Dash:
             selected_time_iso = _to_iso(forecast_service.get_default_selected_time())
         selected_time_utc = _from_iso(selected_time_iso)
         selected_time_local = _to_local(selected_time_utc)
-        df_now = forecast_service.load_forecast_data()
 
         map_fig = forecast_service.build_map_figure(
             selected_time=selected_time_utc,
             selected_name=selected_name,
             zoom=zoom,
-            df=df_now,
         )
 
         # If no location selected, return empty airgram
@@ -532,11 +531,9 @@ def create_dash_app() -> Dash:
 
         # Build airgram for selected location
         day = selected_time_local.date()
-        forecast_hours = forecast_service.get_forecast_hours_for_day(
-            selected_name, day, df_now
-        )
+        forecast_hours = forecast_service.get_forecast_hours_for_day(selected_name, day)
         yr_entries = forecast_service.get_yr_weather_for_day(
-            selected_name, day, df_now, restrict_to_hours=forecast_hours
+            selected_name, day, restrict_to_hours=forecast_hours
         )
 
         airgram_fig = forecast_service.build_airgram_figure(
@@ -545,11 +542,10 @@ def create_dash_app() -> Dash:
             altitude_max=altitude_max,
             yr_entries=yr_entries,
             selected_hour=selected_time_local.hour,
-            df=df_now,
         )
 
-        summary = forecast_service.get_summary(selected_name, selected_time_utc, df_now)
-        latest_ts = forecast_service.get_latest_forecast_timestamp(df_now)
+        summary = forecast_service.get_summary(selected_name, selected_time_utc)
+        latest_ts = forecast_service.get_latest_forecast_timestamp()
         age_hours = (
             dt.datetime.now(dt.timezone.utc) - latest_ts
         ).total_seconds() / 3600

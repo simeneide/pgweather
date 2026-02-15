@@ -1,20 +1,16 @@
 # %%
 # Write table
-import polars as pl
-from dotenv import load_dotenv
+from __future__ import annotations
+
 from typing import Optional
 
-load_dotenv()
-import os
+import polars as pl
+
+from src.web.config import settings
 
 
 def _get_database_uri() -> str:
-    database_url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
-    if database_url:
-        return database_url
-    raise RuntimeError(
-        "Database credentials missing. Set SUPABASE_DB_URL or DATABASE_URL."
-    )
+    return settings.supabase_db_url
 
 
 class Database:
@@ -23,28 +19,24 @@ class Database:
     def __init__(self, uri: Optional[str] = None):
         self.uri = uri or _get_database_uri()
 
-    def read(self, query):
-        """
-        query = "SELECT * FROM weather_stations"
-        query = "SELECT * FROM weather_measurements"
-        """
+    def read(self, query: str) -> pl.DataFrame:
+        return pl.read_database_uri(query=query, uri=self.uri, engine="adbc")
 
-        df = pl.read_database_uri(query=query, uri=self.uri, engine="adbc")
-        return df
-
-    def write(self, df: pl.DataFrame, table_name, if_table_exists="append"):
+    def write(
+        self,
+        df: pl.DataFrame,
+        table_name: str,
+        if_table_exists: str = "append",
+    ) -> bool:
         df.write_database(
             table_name=table_name,
             connection=self.uri,
             engine="adbc",
-            if_table_exists=if_table_exists,
+            if_table_exists=if_table_exists,  # type: ignore[arg-type]
         )
         return True
 
-    def execute_query(self, query):
-        """
-        query = "select * from records"
-        """
+    def execute_query(self, query: str) -> list | None:
         import psycopg2
 
         conn = psycopg2.connect(self.uri)
