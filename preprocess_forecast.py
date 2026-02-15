@@ -14,6 +14,13 @@ import polars as pl
 import takeoff_utils
 
 
+# Empirical entrainment/drag factor for thermal velocity calculation.
+# Real thermals lose energy to mixing with environmental air.  Raw parcel
+# theory over-predicts by ~2-3×; k ≈ 0.4 is a reasonable starting point
+# from literature (Lenschow 1980, Allen 2006).  Tune against pilot vario data.
+ENTRAINMENT_FACTOR = 0.4
+
+
 # %%
 def compute_thermal_temp_difference(subset):
     """Compute the buoyancy excess of a dry-adiabatic parcel rising from the surface.
@@ -33,6 +40,70 @@ def compute_thermal_temp_difference(subset):
     ground_parcel_temp = ground_temp - temp_decrease
     thermal_temp_diff = (ground_parcel_temp - air_temp).clip(min=0)
     return thermal_temp_diff
+
+
+def compute_thermal_velocity(subset):
+    """Compute thermal updraft speed (m/s) at each altitude level.
+
+    Uses buoyancy integration: a dry-adiabatic parcel accelerates upward
+    due to temperature excess over the environment.  The cumulative
+    velocity is derived from the work-energy theorem::
+
+        B(z) = g × ΔT(z) / T_env(z)           # buoyancy acceleration [m/s²]
+        w(z) = k × sqrt(2 × ∫₀ᶻ B(z') dz')    # integrated from ground up
+
+    where k = ENTRAINMENT_FACTOR accounts for drag and entrainment losses
+    in real thermals.
+
+    Returns both ``thermal_velocity`` and the intermediate
+    ``thermal_temp_diff`` (needed for thermal_top calculation).
+    """
+    g = 9.80665
+
+    # Step 1: dry-adiabatic parcel buoyancy excess (°C, clipped ≥ 0)
+    thermal_temp_diff = compute_thermal_temp_difference(subset)
+
+    # Step 2: buoyancy acceleration at each level  [m/s²]
+    # ΔT is in °C (== K difference), T_env is in K → ratio is dimensionless
+    T_env_K = subset["air_temperature_ml"]  # Kelvin
+    buoyancy = g * thermal_temp_diff / T_env_K
+
+    # Step 3: cumulative upward integral of buoyancy × dz  [m²/s²]
+    # Use per-gridpoint height_agl; diff along the altitude dimension gives dz.
+    height_agl = subset["height_agl"]  # dims: (altitude, y, x)
+    dz = height_agl.diff("altitude")  # spacing between consecutive levels
+
+    # Trapezoidal rule: average buoyancy of adjacent levels × dz
+    buoyancy_lower = buoyancy.isel(altitude=slice(None, -1))
+    buoyancy_upper = buoyancy.isel(altitude=slice(1, None))
+    # Use .values to avoid coordinate alignment issues
+    buoyancy_mid = 0.5 * (buoyancy_lower.values + buoyancy_upper.values)
+    integrand = buoyancy_mid * dz.values  # shape: (time, altitude-1, y, x)
+
+    # Cumulative sum along the altitude axis
+    alt_axis = list(dz.dims).index("altitude")
+    cumulative_work = np.cumsum(integrand, axis=alt_axis)
+
+    # Prepend a zero slice for the lowest altitude level (w=0 at ground)
+    zero_shape = list(cumulative_work.shape)
+    zero_shape[alt_axis] = 1
+    cumulative_work = np.concatenate(
+        [np.zeros(zero_shape), cumulative_work], axis=alt_axis
+    )
+
+    # Step 4: velocity from work-energy theorem  [m/s]
+    thermal_velocity = ENTRAINMENT_FACTOR * np.sqrt(
+        2.0 * np.clip(cumulative_work, 0, None)
+    )
+
+    # Wrap back into an xarray DataArray with original coords
+    thermal_velocity_da = xr.DataArray(
+        thermal_velocity,
+        dims=buoyancy.dims,
+        coords=buoyancy.coords,
+    )
+
+    return thermal_velocity_da, thermal_temp_diff
 
 
 def extract_timestamp(filename):
@@ -218,15 +289,14 @@ def load_meps_for_location(file_path=None, altitude_min=0, altitude_max=4000):
     wind_speed = np.sqrt(subset["x_wind_ml"] ** 2 + subset["y_wind_ml"] ** 2)
     subset = subset.assign(wind_speed=(("time", "altitude", "y", "x"), wind_speed.data))
 
-    subset["thermal_temp_diff"] = compute_thermal_temp_difference(subset)
-    # subset = subset.assign(thermal_temp_diff=(('time', 'altitude','y','x'), thermal_temp_diff.data))
+    thermal_velocity_da, thermal_temp_diff_da = compute_thermal_velocity(subset)
+    subset["thermal_velocity"] = thermal_velocity_da
 
     # Find thermal top: highest altitude where thermal_temp_diff exceeds a
-    # usable threshold.  0.5 °C excess ≈ 0.5 m/s climb-rate — the minimum
-    # for practically soarable thermals.
+    # usable threshold.  0.5 °C excess ≈ minimum for soarable thermals.
     THERMAL_TOP_THRESHOLD = 0.5  # °C
 
-    thermal_temp_diff = subset["thermal_temp_diff"]
+    thermal_temp_diff = thermal_temp_diff_da
     # Zero out values below the threshold so argmax finds the first altitude
     # (from the top, since MEPS altitudes are descending) where thermals are
     # still usable.
@@ -331,7 +401,7 @@ if __name__ == "__main__":
                 "longitude",
                 "latitude",
                 "wind_speed",
-                "thermal_temp_diff",
+                "thermal_velocity",
                 "thermal_top",
                 "thermal_height_above_ground",
             )

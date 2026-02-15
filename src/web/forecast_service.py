@@ -218,13 +218,14 @@ def load_map_data(selected_time: dt.datetime) -> pl.DataFrame:
     if cached is not None and cached.is_fresh(settings.data_ttl_seconds):
         return cached.data
 
-    # One row per name — pick the lowest altitude for each name using
-    # DISTINCT ON. thermal_top is the same at all altitudes for a given
-    # (name, time) but wind_speed varies; lowest altitude gives surface wind.
+    # One row per name with surface wind (lowest altitude) and peak thermal
+    # velocity (max across all altitudes).  Uses a window function to compute
+    # the max before DISTINCT ON picks the lowest-altitude row.
     query = f"""
     SELECT DISTINCT ON (name)
            name, latitude, longitude, point_type,
-           thermal_top, wind_speed
+           thermal_top, wind_speed,
+           MAX(thermal_velocity) OVER (PARTITION BY name) AS peak_thermal_velocity
     FROM detailed_forecasts
     WHERE forecast_timestamp = '{latest_ts.isoformat()}'
       AND time = '{selected_time.isoformat()}'
@@ -276,7 +277,7 @@ def load_windgram_data(name: str, date: dt.date) -> pl.DataFrame:
     query = f"""
     SELECT time, altitude, elevation,
            air_temperature_ml, x_wind_ml, y_wind_ml,
-           wind_speed, thermal_temp_diff, thermal_top,
+           wind_speed, thermal_velocity, thermal_top,
            thermal_height_above_ground
     FROM detailed_forecasts
     WHERE forecast_timestamp = '{latest_ts.isoformat()}'
@@ -434,39 +435,44 @@ def build_map_figure(
 ) -> go.Figure:
     map_df = load_map_data(selected_time)
 
+    # Climb rate colorscale: 0–5 m/s
     thermal_colorscale = [
-        (0.0, "grey"),
-        (0.2, "yellow"),
-        (0.4, "red"),
-        (0.6, "violet"),
-        (1.0, "black"),
+        (0.0, "rgb(200,200,200)"),  # 0 m/s – grey (no thermals)
+        (0.2, "rgb(255,255,150)"),  # 1 m/s – light yellow (weak)
+        (0.4, "rgb(255,220,50)"),  # 2 m/s – golden (moderate)
+        (0.6, "rgb(255,140,0)"),  # 3 m/s – orange (good)
+        (0.8, "rgb(230,60,0)"),  # 4 m/s – red-orange (strong)
+        (1.0, "rgb(180,0,0)"),  # 5 m/s – deep red (extreme)
     ]
 
     fig = go.Figure()
     geojson = _load_geojson()
 
-    # Kommune choropleth — transparent colored polygons for area-level thermal top
+    # Kommune choropleth — transparent colored polygons for area-level climb rate
     subset_area = map_df.filter(pl.col("point_type") == "area")
     if len(subset_area) > 0:
         area_names = subset_area.get_column("name").to_numpy()
-        area_thermal_top = subset_area.get_column("thermal_top").to_numpy().round()
+        area_velocity = subset_area.get_column("peak_thermal_velocity").to_numpy()
+        area_thermal_top = subset_area.get_column("thermal_top").to_numpy()
         fig.add_trace(
             go.Choroplethmap(
                 geojson=geojson,
                 zmin=0,
-                zmax=5000,
+                zmax=5,
                 featureidkey="properties.name",
                 locations=area_names,
                 ids=area_names,
-                z=area_thermal_top,
+                z=area_velocity,
                 colorscale=thermal_colorscale,
                 marker_opacity=0.15,
                 showscale=False,
                 showlegend=False,
                 hoverinfo="text",
                 hovertext=[
-                    f"{name} | Median thermal top: {ht:.0f} m"
-                    for ht, name in zip(area_thermal_top, area_names)
+                    f"{name} | Climb: {vel:.1f} m/s | Top: {ht:.0f} m"
+                    for vel, ht, name in zip(
+                        area_velocity, area_thermal_top, area_names
+                    )
                 ],
             )
         )
@@ -476,6 +482,7 @@ def build_map_figure(
     if len(subset_points) > 0:
         lat = subset_points.get_column("latitude").to_numpy()
         lon = subset_points.get_column("longitude").to_numpy()
+        peak_velocity = subset_points.get_column("peak_thermal_velocity").to_numpy()
         thermal_top = subset_points.get_column("thermal_top").to_numpy().round()
         names = subset_points.get_column("name").to_numpy()
         if selected_name is not None:
@@ -509,7 +516,7 @@ def build_map_figure(
             )
         )
 
-        # Main colored markers
+        # Main colored markers — colored by peak climb rate
         fig.add_trace(
             go.Scattermap(
                 lat=lat,
@@ -518,14 +525,14 @@ def build_map_figure(
                 marker=go.scattermap.Marker(
                     size=marker_size,
                     cmin=0,
-                    cmax=5000,
-                    color=thermal_top,
+                    cmax=5,
+                    color=peak_velocity,
                     colorscale=thermal_colorscale,
                     opacity=1,
                     showscale=True,
                     colorbar=dict(
                         title=dict(
-                            text="Thermal top (m)",
+                            text="Climb rate (m/s)",
                             side="right",
                             font=dict(size=10),
                         ),
@@ -542,8 +549,8 @@ def build_map_figure(
                 ids=names,
                 customdata=names,
                 text=[
-                    f"{name} | thermal top: {ht} m"
-                    for ht, name in zip(thermal_top, names)
+                    f"{name} | {vel:.1f} m/s | top: {ht} m"
+                    for vel, ht, name in zip(peak_velocity, thermal_top, names)
                 ],
                 hoverinfo="text",
                 showlegend=False,
@@ -633,17 +640,17 @@ def _wind_arrow_color(
     return colors[-1]
 
 
-# Thermal colorscale: grey -> yellow -> orange (mimics meteo-parapente)
+# Thermal velocity colorscale: 0–5 m/s climb rate
 _THERMAL_COLORSCALE = [
-    [0.0, "rgb(255,255,255)"],  # zero diff – white (matches background)
+    [0.0, "rgb(255,255,255)"],  # 0 m/s – white (no thermals)
     [0.01, "rgb(255,255,255)"],  # tiny buffer to keep near-zero white
     [0.02, "rgb(255,255,210)"],  # barely above threshold – visible tint
-    [0.08, "rgb(255,255,150)"],  # weak thermal (~0.5°C) – light yellow
-    [0.17, "rgb(255,245,80)"],  # moderate (~1°C) – yellow
-    [0.33, "rgb(255,220,50)"],  # good (~2°C) – golden
-    [0.50, "rgb(255,180,30)"],  # strong (~3°C) – orange-yellow
-    [0.70, "rgb(255,140,0)"],  # very strong (~4°C) – orange
-    [1.0, "rgb(255,80,0)"],  # extreme (~6°C) – deep orange
+    [0.10, "rgb(255,255,150)"],  # ~0.5 m/s – weak, light yellow
+    [0.20, "rgb(255,245,80)"],  # ~1.0 m/s – moderate, yellow
+    [0.40, "rgb(255,220,50)"],  # ~2.0 m/s – good, golden
+    [0.60, "rgb(255,180,30)"],  # ~3.0 m/s – strong, orange-yellow
+    [0.80, "rgb(255,140,0)"],  # ~4.0 m/s – very strong, orange
+    [1.0, "rgb(255,80,0)"],  # ~5.0 m/s – extreme, deep orange
 ]
 
 
@@ -732,18 +739,18 @@ def build_airgram_figure(
     fig = go.Figure()
 
     # --- 1) Thermal heatmap (background) ---
-    # Zero out thermal_temp_diff above the computed thermal_top so the
+    # Zero out thermal_velocity above the computed thermal_top so the
     # heatmap boundary matches the thermal top line exactly.
     plot_frame = plot_frame.with_columns(
         pl.when(pl.col("altitude") > pl.col("thermal_top"))
         .then(0.0)
-        .otherwise(pl.col("thermal_temp_diff"))
-        .alias("thermal_temp_diff")
+        .otherwise(pl.col("thermal_velocity"))
+        .alias("thermal_velocity")
     )
 
     # Pivot thermal data into a 2D grid for the heatmap
     thermal_pivot = plot_frame.pivot(
-        on="time_label", index="altitude", values="thermal_temp_diff"
+        on="time_label", index="altitude", values="thermal_velocity"
     ).sort("altitude")
     z_altitudes = thermal_pivot["altitude"].to_numpy()
     # Columns are the time labels; select them in the right order
@@ -757,12 +764,11 @@ def build_airgram_figure(
             y=z_altitudes,
             colorscale=_THERMAL_COLORSCALE,
             zmin=0,
-            zmax=6,
+            zmax=5,
             zsmooth=False,
             showscale=False,
             hovertemplate=(
-                "Alt: %{y:.0f}m<br>Time: %{x}<br>"
-                "Thermal diff: %{z:.1f}°C<extra></extra>"
+                "Alt: %{y:.0f}m<br>Time: %{x}<br>Climb: %{z:.1f} m/s<extra></extra>"
             ),
         )
     )
@@ -827,7 +833,7 @@ def build_airgram_figure(
         wind_alts = plot_frame_wind["altitude"].to_numpy()
         wind_dirs = plot_frame_wind["wind_direction"].to_numpy()
         wind_spds = plot_frame_wind["wind_speed"].to_numpy()
-        thermal_diffs = plot_frame_wind["thermal_temp_diff"].to_numpy()
+        thermal_vels = plot_frame_wind["thermal_velocity"].to_numpy()
 
         # Arrow markers with speed labels
         fig.add_trace(
@@ -847,9 +853,9 @@ def build_airgram_figure(
                 textfont=dict(size=9, color="#555", family="Arial"),
                 hoverinfo="text",
                 hovertext=[
-                    f"Alt: {alt:.0f}m | {spd:.0f} m/s | {angle:.0f}° | Thermal diff: {td:.1f}°C"
-                    for alt, spd, angle, td in zip(
-                        wind_alts, wind_spds, wind_dirs, thermal_diffs
+                    f"Alt: {alt:.0f}m | Wind: {spd:.0f} m/s | {angle:.0f}° | Climb: {tv:.1f} m/s"
+                    for alt, spd, angle, tv in zip(
+                        wind_alts, wind_spds, wind_dirs, thermal_vels
                     )
                 ],
                 showlegend=False,
