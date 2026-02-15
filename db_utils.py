@@ -10,7 +10,7 @@ from src.web.config import settings
 
 
 def _get_database_uri() -> str:
-    return settings.supabase_db_url
+    return settings.db_url
 
 
 class Database:
@@ -33,6 +33,27 @@ class Database:
             connection=self.uri,
             engine="adbc",
             if_table_exists=if_table_exists,  # type: ignore[arg-type]
+        )
+        return True
+
+    def replace_data(self, df: pl.DataFrame, table_name: str) -> bool:
+        """Replace all data in *table_name* without dropping the table.
+
+        Uses TRUNCATE (fast, preserves indexes/schema) then appends new data.
+        Falls back to ``if_table_exists="replace"`` if the table doesn't exist.
+        """
+        table_exists = True
+        try:
+            self.execute_query(f"TRUNCATE TABLE {table_name}")
+        except Exception:
+            # Table may not exist yet — let write_database create it
+            table_exists = False
+
+        df.write_database(
+            table_name=table_name,
+            connection=self.uri,
+            engine="adbc",
+            if_table_exists="append" if table_exists else "replace",
         )
         return True
 

@@ -392,11 +392,12 @@ if __name__ == "__main__":
         )
         # %%
 
-        # Save to aiven db
+        # Save to db — use TRUNCATE+append to preserve indexes and avoid
+        # DROP TABLE timeouts on large indexed tables.
         print("Save area forecast to db..")
-        db.write(area_forecasts, "area_forecasts", if_table_exists="replace")
+        db.replace_data(area_forecasts, "area_forecasts")
         print("saving detailed forecast to db...")
-        db.write(point_forecasts, "detailed_forecasts", if_table_exists="replace")
+        db.replace_data(point_forecasts, "detailed_forecasts")
         print(
             f"saved {len(point_forecasts)} point forecasts and {len(area_forecasts)} area forecasts to db."
         )

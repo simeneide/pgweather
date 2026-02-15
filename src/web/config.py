@@ -14,9 +14,22 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Database
-    supabase_db_url: str
-    """Postgres connection string (required)."""
+    # Database — accepts SUPABASE_DB_URL (local/.envrc, GitHub Actions)
+    # or DATABASE_URL (Fly.io secret)
+    supabase_db_url: str = ""  # type: ignore[assignment]
+    """Postgres connection string (required). Set via SUPABASE_DB_URL or DATABASE_URL."""
+    database_url: str = ""
+    """Alternative env var name for the Postgres connection string (Fly.io)."""
+
+    @property
+    def db_url(self) -> str:
+        """Return the database URL, preferring supabase_db_url over database_url."""
+        url = self.supabase_db_url or self.database_url
+        if not url:
+            raise RuntimeError(
+                "No database URL configured. Set SUPABASE_DB_URL or DATABASE_URL."
+            )
+        return url
 
     # Forecast cache TTL
     data_ttl_seconds: int = 600
