@@ -25,10 +25,25 @@ import db_utils
 
 from .config import settings
 from .models import (
+    COMPASS_SECTORS,
+    AirgramPayloadResponse,
+    AirgramThermalTop,
+    AirgramWindSample,
+    AirgramYrPoint,
     CacheEntry,
     ForecastMeta,
+    FrontendDay,
+    FrontendMetaResponse,
+    MapAreaFeature,
+    MapCenter,
+    MapFeaturePoint,
+    MapPayloadResponse,
+    ModelSourceOption,
+    SummaryResponse,
     TakeoffInfo,
     TakeoffOption,
+    WindSectorData,
+    WindVector,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +52,139 @@ logger = logging.getLogger(__name__)
 # Shared database helper
 # ---------------------------------------------------------------------------
 _db = db_utils.Database()
+
+# ---------------------------------------------------------------------------
+# Wind sector data from ParaglidingEarth
+# ---------------------------------------------------------------------------
+_WIND_SECTOR_CACHE: CacheEntry[dict[str, WindSectorData]] | None = None
+_WIND_SECTOR_TTL = 3600 * 6  # refresh every 6 hours (rarely changes)
+
+_PGE_API_URL = "http://www.paraglidingearth.com/api/geojson/getCountrySites.php?iso=NO"
+
+
+def _load_wind_sectors() -> dict[str, WindSectorData]:
+    """Fetch wind sector suitability per takeoff from ParaglidingEarth API."""
+    global _WIND_SECTOR_CACHE  # noqa: PLW0603
+    if _WIND_SECTOR_CACHE is not None and _WIND_SECTOR_CACHE.is_fresh(_WIND_SECTOR_TTL):
+        return _WIND_SECTOR_CACHE.data
+
+    try:
+        resp = requests.get(_PGE_API_URL, timeout=15)
+        resp.raise_for_status()
+        features = resp.json()["features"]
+    except Exception:
+        logger.exception("Failed to fetch ParaglidingEarth wind sectors")
+        if _WIND_SECTOR_CACHE is not None:
+            return _WIND_SECTOR_CACHE.data
+        return {}
+
+    result: dict[str, WindSectorData] = {}
+    for feat in features:
+        props = feat.get("properties", {})
+        name = props.get("name", "")
+        if not name:
+            continue
+        sectors: dict[str, int] = {}
+        for s in COMPASS_SECTORS:
+            raw = props.get(s, "0")
+            try:
+                sectors[s] = int(raw) if raw else 0
+            except (ValueError, TypeError):
+                sectors[s] = 0
+        wsd = WindSectorData(sectors=sectors)
+        result[name] = wsd
+        # Also store under the double-UTF8-encoded (mojibake) name so
+        # lookups work when DB names have encoding issues.
+        # The DB stores UTF-8 bytes re-interpreted as CP1252.
+        try:
+            mojibake = name.encode("utf-8").decode("cp1252")
+            if mojibake != name:
+                result[mojibake] = wsd
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            pass
+
+    _WIND_SECTOR_CACHE = CacheEntry(
+        loaded_at=dt.datetime.now(dt.timezone.utc), data=result
+    )
+    logger.info(
+        "Loaded wind sectors for %d takeoffs from ParaglidingEarth", len(result)
+    )
+    return result
+
+
+def get_wind_sectors() -> dict[str, WindSectorData]:
+    """Public accessor for wind sector data."""
+    return _load_wind_sectors()
+
+
+# ---------------------------------------------------------------------------
+# Wind suitability classification
+# ---------------------------------------------------------------------------
+_CALM_WIND_THRESHOLD = 1.5  # m/s — below this wind is always flyable
+
+
+def _wind_direction_from_components(x_wind: float, y_wind: float) -> float:
+    """Meteorological wind direction (where wind comes FROM) in [0, 360).
+
+    MEPS convention: x_wind = eastward, y_wind = northward.
+    """
+    direction = 180.0 + np.degrees(np.arctan2(x_wind, y_wind))
+    return float(direction % 360.0)
+
+
+def _direction_to_sector(direction_deg: float) -> str:
+    """Map a wind direction (degrees) to the nearest 8-point compass sector."""
+    idx = int(((direction_deg + 22.5) % 360.0) / 45.0)
+    return COMPASS_SECTORS[idx]
+
+
+def compute_wind_suitability(
+    name: str,
+    x_wind: float,
+    y_wind: float,
+    wind_speed: float,
+    wind_sectors: dict[str, WindSectorData],
+) -> tuple[str, str, str]:
+    """Classify wind suitability for a takeoff.
+
+    Returns ``(color, suitability_label, tooltip_extra)``.
+    """
+    wind_dir = _wind_direction_from_components(x_wind, y_wind)
+    sector_name = _direction_to_sector(wind_dir)
+    sector_data = wind_sectors.get(name)
+
+    # No sector data → grey
+    if sector_data is None or not sector_data.has_data:
+        return (
+            "#9e9e9e",
+            "No data",
+            f"Wind: {sector_name} {wind_speed:.0f}m/s | No takeoff direction data",
+        )
+
+    facing = sector_data.facing_label()
+
+    # Calm wind → always suitable
+    if wind_speed < _CALM_WIND_THRESHOLD:
+        return (
+            "#4caf50",
+            "Suitable",
+            f"Faces: {facing} | Wind: calm ({wind_speed:.1f}m/s)",
+        )
+
+    rating = sector_data.sectors.get(sector_name, 0)
+    if rating >= 2:
+        color = "#4caf50"  # green
+        label = "Suitable"
+    elif rating == 1:
+        color = "#ff9800"  # orange
+        label = "Marginal"
+    else:
+        color = "#f44336"  # red
+        label = "Not suitable"
+
+    tooltip = f"Faces: {facing} | Wind: {sector_name} {wind_speed:.0f}m/s → {label}"
+    return color, label, tooltip
+
 
 # ---------------------------------------------------------------------------
 # Yr / MET Norway locationforecast
@@ -311,6 +459,454 @@ def get_available_model_sources() -> list[str]:
     return sources
 
 
+_MODEL_SOURCE_LABELS: dict[str, str] = {
+    "meps": "MEPS (Nordic 2.5km)",
+    "icon-eu": "ICON-EU (Europe 7km)",
+    "icon-global": "ICON Global (13km)",
+}
+
+
+def _to_local(ts: dt.datetime) -> dt.datetime:
+    return _ensure_tz_utc(ts).astimezone(ZoneInfo("Europe/Oslo"))
+
+
+def _day_label(day: dt.date) -> str:
+    return day.strftime("%a %d")
+
+
+def _pick_default_time(available_times: list[dt.datetime]) -> dt.datetime:
+    now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
+    return min(available_times, key=lambda t: abs((t - now).total_seconds()))
+
+
+def get_frontend_metadata(
+    model_source: str | None = None,
+    forecast_ts: Optional[dt.datetime] = None,
+) -> FrontendMetaResponse:
+    ms = model_source or settings.default_model_source
+    available_models = get_available_model_sources()
+    if ms not in available_models and available_models:
+        ms = available_models[0]
+
+    meta = load_metadata(forecast_ts=forecast_ts, model_source=ms)
+    if not meta.available_times:
+        raise RuntimeError("No forecast times available")
+
+    default_time = _pick_default_time(meta.available_times)
+    by_day: dict[str, list[dt.datetime]] = {}
+    for ts in sorted(meta.available_times, key=_to_local):
+        day_key = _to_local(ts).date().isoformat()
+        by_day.setdefault(day_key, []).append(ts)
+
+    default_day = _to_local(default_time).date().isoformat()
+    if default_day not in by_day:
+        default_day = next(iter(by_day.keys()))
+
+    target_hour = 14
+    default_day_times = by_day[default_day]
+    selected_time = min(
+        default_day_times, key=lambda t: abs(_to_local(t).hour - target_hour)
+    )
+
+    days = [
+        FrontendDay(
+            key=day_key,
+            label=_day_label(dt.date.fromisoformat(day_key)),
+            times=[_ensure_tz_utc(ts).isoformat() for ts in time_values],
+        )
+        for day_key, time_values in by_day.items()
+    ]
+
+    model_options = [
+        ModelSourceOption(label=_MODEL_SOURCE_LABELS.get(m, m), value=m)
+        for m in available_models
+    ]
+
+    return FrontendMetaResponse(
+        latest_forecast_timestamp=_ensure_tz_utc(
+            meta.latest_forecast_timestamp
+        ).isoformat(),
+        selected_model_source=ms,
+        default_model_source=settings.default_model_source,
+        model_source_options=model_options,
+        selected_day=default_day,
+        selected_time=_ensure_tz_utc(selected_time).isoformat(),
+        days=days,
+        location_options=meta.takeoff_options,
+    )
+
+
+def build_map_payload(
+    selected_time: dt.datetime,
+    selected_name: Optional[str],
+    zoom: int,
+    forecast_ts: Optional[dt.datetime] = None,
+    wind_altitude: Optional[float] = None,
+    model_source: str | None = None,
+) -> MapPayloadResponse:
+    ms = model_source or settings.default_model_source
+    resolved_ts = _resolve_forecast_ts(forecast_ts, model_source=ms)
+    map_df = load_map_data(selected_time, forecast_ts=resolved_ts, model_source=ms)
+
+    center_lat = 61.2
+    center_lon = 8.0
+    points: list[MapFeaturePoint] = []
+
+    subset_points = map_df.filter(pl.col("point_type") != "area")
+    wind_sectors = get_wind_sectors()
+    if len(subset_points) > 0:
+        lat = subset_points.get_column("latitude").to_list()
+        lon = subset_points.get_column("longitude").to_list()
+        peak_velocity = subset_points.get_column("peak_thermal_velocity").to_list()
+        thermal_top = subset_points.get_column("thermal_top").to_list()
+        names = subset_points.get_column("name").to_list()
+        x_winds = subset_points.get_column("x_wind_ml").to_list()
+        y_winds = subset_points.get_column("y_wind_ml").to_list()
+        wind_speeds = subset_points.get_column("wind_speed").to_list()
+
+        for i, name in enumerate(names):
+            is_selected = selected_name == name
+            x_w = float(x_winds[i]) if x_winds[i] is not None else 0.0
+            y_w = float(y_winds[i]) if y_winds[i] is not None else 0.0
+            ws = float(wind_speeds[i]) if wind_speeds[i] is not None else 0.0
+            color, label, tooltip = compute_wind_suitability(
+                str(name), x_w, y_w, ws, wind_sectors
+            )
+            wind_dir = _wind_direction_from_components(x_w, y_w)
+            wind_compass = _direction_to_sector(wind_dir)
+            points.append(
+                MapFeaturePoint(
+                    name=str(name),
+                    latitude=float(lat[i]),
+                    longitude=float(lon[i]),
+                    thermal_top=float(thermal_top[i]),
+                    peak_thermal_velocity=float(peak_velocity[i]),
+                    selected=is_selected,
+                    suitability_color=color,
+                    suitability_label=label,
+                    suitability_tooltip=tooltip,
+                    wind_speed=ws,
+                    wind_direction_compass=wind_compass,
+                )
+            )
+
+        selected_points = [p for p in points if p.selected]
+        if selected_points:
+            center_lat = selected_points[0].latitude
+            center_lon = selected_points[0].longitude
+        else:
+            center_lat = float(np.mean(np.array(lat, dtype=float)))
+            center_lon = float(np.mean(np.array(lon, dtype=float)))
+
+    area_features: list[MapAreaFeature] = []
+    subset_area = map_df.filter(pl.col("point_type") == "area")
+    if len(subset_area) > 0:
+        area_lookup: dict[str, tuple[float, float]] = {}
+        for row in subset_area.iter_rows(named=True):
+            area_lookup[str(row["name"])] = (
+                float(row["peak_thermal_velocity"]),
+                float(row["thermal_top"]),
+            )
+
+        geojson = _load_geojson()
+        for feature in geojson.get("features", []):
+            props = feature.get("properties", {})
+            area_name = props.get("name")
+            if not isinstance(area_name, str):
+                continue
+            stats = area_lookup.get(area_name)
+            if stats is None:
+                continue
+            vel, thermal_top = stats
+            feature_props = dict(props)
+            feature_props["peak_thermal_velocity"] = vel
+            feature_props["thermal_top"] = thermal_top
+            area_features.append(
+                MapAreaFeature(
+                    type="Feature",
+                    geometry=feature.get("geometry", {}),
+                    properties=feature_props,
+                )
+            )
+
+    wind_vectors: list[WindVector] = []
+    if wind_altitude is not None:
+        grid_df = load_grid_wind_data(
+            selected_time,
+            altitude=wind_altitude,
+            forecast_ts=resolved_ts,
+            model_source=ms,
+        )
+        if len(grid_df) > 0:
+            g_lat = np.array(grid_df.get_column("latitude").to_list(), dtype=float)
+            g_lon = np.array(grid_df.get_column("longitude").to_list(), dtype=float)
+            g_u = np.array(grid_df.get_column("x_wind_ml").to_list(), dtype=float)
+            g_v = np.array(grid_df.get_column("y_wind_ml").to_list(), dtype=float)
+            g_spd = np.array(grid_df.get_column("wind_speed").to_list(), dtype=float)
+
+            valid = np.isfinite(g_spd) & (g_spd > 0.1)
+            g_lat, g_lon = g_lat[valid], g_lon[valid]
+            g_u, g_v, g_spd = g_u[valid], g_v[valid], g_spd[valid]
+
+            thin = 2 if zoom <= 6 else 1
+            if thin > 1:
+                keep = np.zeros(len(g_lat), dtype=bool)
+                dlat = 0.075 * thin
+                qi = (g_lat / dlat).astype(int)
+                qj = (g_lon / dlat).astype(int)
+                seen: set[tuple[int, int]] = set()
+                for idx in range(len(g_lat)):
+                    key = (qi[idx], qj[idx])
+                    if key not in seen:
+                        seen.add(key)
+                        keep[idx] = True
+                g_lat, g_lon = g_lat[keep], g_lon[keep]
+                g_u, g_v, g_spd = g_u[keep], g_v[keep], g_spd[keep]
+
+            arrow_len_deg = 0.04 * (2 ** (zoom - 6))
+            arrow_len_deg = min(arrow_len_deg, 0.15)
+            cos_lat = np.cos(np.radians(g_lat))
+            mag = np.maximum(g_spd, 0.01)
+            du = g_u / mag
+            dv = g_v / mag
+            tip_lat = g_lat + dv * arrow_len_deg
+            tip_lon = g_lon + du * arrow_len_deg / cos_lat
+
+            wind_dir_deg = (np.degrees(np.arctan2(-g_u, -g_v)) + 360) % 360
+            compass = [_deg_to_compass(float(d)) for d in wind_dir_deg]
+
+            for i in range(len(g_lat)):
+                wind_vectors.append(
+                    WindVector(
+                        latitude=float(g_lat[i]),
+                        longitude=float(g_lon[i]),
+                        tip_latitude=float(tip_lat[i]),
+                        tip_longitude=float(tip_lon[i]),
+                        wind_speed=float(g_spd[i]),
+                        direction_degrees=float(wind_dir_deg[i]),
+                        direction_compass=compass[i],
+                    )
+                )
+
+    local_time = _to_local(selected_time)
+    return MapPayloadResponse(
+        selected_time=_ensure_tz_utc(selected_time).isoformat(),
+        selected_time_local_label=local_time.strftime("%a %d %b %H:%M"),
+        selected_name=selected_name,
+        center=MapCenter(lat=center_lat, lon=center_lon, zoom=zoom),
+        points=points,
+        area_features=area_features,
+        wind_altitude=wind_altitude,
+        wind_vectors=wind_vectors,
+    )
+
+
+def build_airgram_payload(
+    target_name: str,
+    selected_date: dt.date,
+    altitude_max: int,
+    selected_hour: Optional[int] = None,
+    forecast_ts: Optional[dt.datetime] = None,
+    model_source: str | None = None,
+) -> AirgramPayloadResponse:
+    ms = model_source or settings.default_model_source
+    resolved_ts = _resolve_forecast_ts(forecast_ts, model_source=ms)
+    yr_entries = get_yr_weather_for_day(
+        target_name,
+        selected_date,
+        restrict_to_hours=get_forecast_hours_for_day(
+            target_name,
+            selected_date,
+            forecast_ts=resolved_ts,
+            model_source=ms,
+        ),
+        model_source=ms,
+    )
+
+    location_data = load_windgram_data(
+        target_name,
+        selected_date,
+        forecast_ts=resolved_ts,
+        model_source=ms,
+    )
+
+    display_start_hour = 8
+    display_end_hour = 21
+    location_data = location_data.with_columns(
+        time=pl.col("time").dt.convert_time_zone("Europe/Oslo")
+    ).filter(
+        pl.col("time").dt.hour().is_between(display_start_hour, display_end_hour),
+    )
+
+    if len(location_data) == 0:
+        return AirgramPayloadResponse(
+            location=target_name,
+            date=selected_date.isoformat(),
+            timezone="Europe/Oslo",
+            elevation=0.0,
+            altitude_max=altitude_max,
+            selected_hour=selected_hour,
+            time_labels=[],
+            altitudes=[],
+            thermal_matrix=[],
+            thermal_tops=[],
+            wind_samples=[],
+            yr=[],
+        )
+
+    elevation = float(location_data["elevation"].min())
+    new_timestamps = location_data.select("time").to_series().unique().sort().to_list()
+    altitudes = np.arange(0.0, float(altitude_max) + 200.0, 200)
+
+    output_frame = (
+        pl.DataFrame({"time": [new_timestamps], "altitude": [altitudes]})
+        .explode("time")
+        .explode("altitude")
+        .sort("altitude")
+    )
+
+    plot_frame = (
+        output_frame.sort("time", "altitude")
+        .with_columns(pl.col("altitude").set_sorted())
+        .join_asof(
+            location_data.sort("time", "altitude").with_columns(
+                pl.col("altitude").set_sorted()
+            ),
+            on="altitude",
+            by="time",
+            strategy="nearest",
+        )
+        .with_columns(
+            wind_direction=-pl.arctan2("y_wind_ml", "x_wind_ml").degrees() + 90,
+        )
+        .sort("time")
+    )
+
+    plot_frame = plot_frame.with_columns(
+        pl.when(pl.col("altitude") > pl.col("thermal_top"))
+        .then(0.0)
+        .otherwise(pl.col("thermal_velocity"))
+        .alias("thermal_velocity")
+    )
+
+    time_labels = [t.strftime("%Hh") for t in new_timestamps]
+    plot_frame = plot_frame.with_columns(
+        pl.col("time").dt.strftime("%Hh").alias("time_label")
+    )
+
+    thermal_pivot = plot_frame.pivot(
+        on="time_label", index="altitude", values="thermal_velocity"
+    ).sort("altitude")
+    z_altitudes = [float(v) for v in thermal_pivot["altitude"].to_list()]
+    z_cols = [c for c in time_labels if c in thermal_pivot.columns]
+    z_matrix = thermal_pivot.select(z_cols).to_numpy().tolist()
+
+    thermal_tops_per_time = (
+        plot_frame.group_by("time")
+        .agg(pl.col("thermal_top").first())
+        .sort("time")
+        .with_columns(pl.col("time").dt.strftime("%Hh").alias("time_label"))
+    )
+    thermal_tops = [
+        AirgramThermalTop(
+            time_label=str(row["time_label"]), thermal_top=float(row["thermal_top"])
+        )
+        for row in thermal_tops_per_time.iter_rows(named=True)
+    ]
+
+    available_alts = np.array(sorted(plot_frame["altitude"].unique().to_list()))
+    above_ground = available_alts[available_alts >= elevation]
+    if len(above_ground) > 0:
+        target_alts = np.arange(above_ground[0], float(altitude_max) + 1, 250)
+        wind_altitudes = np.unique(
+            [above_ground[np.argmin(np.abs(above_ground - t))] for t in target_alts]
+        )
+    else:
+        wind_altitudes = np.array([])
+    plot_frame_wind = plot_frame.sort("time", "altitude").filter(
+        pl.col("altitude").is_in(wind_altitudes.tolist())
+    )
+
+    wind_samples: list[AirgramWindSample] = []
+    if len(plot_frame_wind) > 0:
+        for row in plot_frame_wind.iter_rows(named=True):
+            wind_samples.append(
+                AirgramWindSample(
+                    time_label=str(row["time_label"]),
+                    altitude=float(row["altitude"]),
+                    wind_speed=float(row["wind_speed"]),
+                    wind_direction=float(row["wind_direction"]),
+                    thermal_velocity=float(row["thermal_velocity"]),
+                )
+            )
+
+    yr_payload: list[AirgramYrPoint] = []
+    for entry in yr_entries:
+        yr_payload.append(
+            AirgramYrPoint(
+                time_label=f"{int(entry['local_hour']):02d}h",
+                icon_png_url=str(entry["icon_png_url"]),
+                symbol_code=str(entry["symbol_code"]),
+                air_temperature=(
+                    None
+                    if entry.get("air_temperature") is None
+                    else float(entry["air_temperature"])
+                ),
+                precipitation=(
+                    None
+                    if entry.get("precipitation") is None
+                    else float(entry["precipitation"])
+                ),
+            )
+        )
+
+    snow_depth_cm: float | None = None
+    if "snow_depth" in location_data.columns:
+        snow_vals = location_data.select("snow_depth").to_series().drop_nulls()
+        if len(snow_vals) > 0:
+            median_snow_m = float(snow_vals.median())
+            if median_snow_m > 0.001:
+                snow_depth_cm = round(median_snow_m * 100, 1)
+
+    return AirgramPayloadResponse(
+        location=target_name,
+        date=selected_date.isoformat(),
+        timezone="Europe/Oslo",
+        elevation=elevation,
+        altitude_max=altitude_max,
+        selected_hour=selected_hour,
+        snow_depth_cm=snow_depth_cm,
+        time_labels=time_labels,
+        altitudes=z_altitudes,
+        thermal_matrix=[[float(v) for v in row] for row in z_matrix],
+        thermal_tops=thermal_tops,
+        wind_samples=wind_samples,
+        yr=yr_payload,
+    )
+
+
+def get_summary_payload(
+    selected_name: str,
+    selected_time: dt.datetime,
+    forecast_ts: Optional[dt.datetime] = None,
+    model_source: str | None = None,
+) -> SummaryResponse:
+    ms = model_source or settings.default_model_source
+    used_ts = forecast_ts or get_latest_forecast_timestamp(model_source=ms)
+    age_hours = (dt.datetime.now(dt.timezone.utc) - used_ts).total_seconds() / 3600
+    summary_text = get_summary(
+        selected_name,
+        selected_time,
+        forecast_ts=forecast_ts,
+        model_source=ms,
+    )
+    return SummaryResponse(
+        summary=summary_text,
+        forecast_used_timestamp=_ensure_tz_utc(used_ts).isoformat(),
+        forecast_age_hours=round(age_hours, 2),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Gridded wind query — single time step + altitude, full spatial grid
 # ---------------------------------------------------------------------------
@@ -403,6 +999,8 @@ def load_map_data(
             altitude,
             thermal_top,
             wind_speed,
+            x_wind_ml,
+            y_wind_ml,
             thermal_velocity
         FROM detailed_forecasts
         WHERE forecast_timestamp = '{latest_ts.isoformat()}'
@@ -416,7 +1014,9 @@ def load_map_data(
             longitude,
             point_type,
             thermal_top,
-            wind_speed
+            wind_speed,
+            x_wind_ml,
+            y_wind_ml
         FROM filtered
         ORDER BY name, altitude
     ),
@@ -432,6 +1032,8 @@ def load_map_data(
         s.point_type,
         s.thermal_top,
         s.wind_speed,
+        s.x_wind_ml,
+        s.y_wind_ml,
         p.peak_thermal_velocity
     FROM surface s
     JOIN peaks p USING (name)

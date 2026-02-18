@@ -1,0 +1,263 @@
+:root {
+  --bg: #f2f5f9;
+  --panel: #f5f8fb;
+  --text: #1e293b;
+  --border: #d9dee6;
+  --blue: #3b82f6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at top right, #ffffff 0%, var(--bg) 65%);
+}
+
+.page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+h1 {
+  margin: 0 0 10px;
+}
+
+.controls {
+  display: grid;
+  gap: 8px;
+  max-width: 900px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.controls select,
+.controls button {
+  border: 1px solid #c0c8d4;
+  border-radius: 6px;
+  background: #fff;
+  color: #333;
+  height: 34px;
+  font-size: 14px;
+}
+
+.day-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pill {
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.pill.active {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+  font-weight: 700;
+}
+
+.hour-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hour-row span {
+  display: inline-flex;
+  min-width: 56px;
+  justify-content: center;
+  font-weight: 600;
+}
+
+.map {
+  height: 75vh;
+  min-height: 350px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+.color-toggle {
+  display: flex;
+  gap: 6px;
+}
+
+.map-legend {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(200, 200, 200, 0.6);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #1e293b;
+  pointer-events: none;
+  line-height: 1.6;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 2px;
+  vertical-align: middle;
+}
+
+.summary {
+  margin: 8px 0 12px;
+  color: #6b7280;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.summary:hover {
+  color: var(--blue);
+}
+
+/* --- Modal overlay --- */
+.modal-wrapper {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 12px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.modal-content {
+  position: relative;
+  z-index: 1;
+  background: #fff;
+  border-radius: 14px;
+  width: 100%;
+  max-width: 960px;
+  max-height: 85vh;
+  overflow: auto;
+  padding: 12px 14px 10px;
+  box-shadow: 0 -4px 30px rgba(0, 0, 0, 0.18);
+}
+
+.modal-close-btn {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  border: none;
+  background: none;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  color: #64748b;
+  z-index: 2;
+  padding: 0 6px;
+}
+
+.modal-close-btn:hover {
+  color: #1e293b;
+}
+
+.modal-header {
+  margin-bottom: 8px;
+}
+
+.modal-header h2 {
+  margin: 0 0 6px;
+  font-size: 1.15rem;
+}
+
+.modal-day-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.modal-day-row .pill {
+  border: 1px solid #c0c8d4;
+  border-radius: 6px;
+  background: #fff;
+  color: #333;
+  height: 30px;
+  font-size: 13px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.modal-day-row .pill.active {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+  font-weight: 700;
+}
+
+.modal-summary {
+  color: #6b7280;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.airgram {
+  width: 100%;
+  min-height: 350px;
+  background: #fff;
+}
+
+@media (min-width: 769px) {
+  .modal-wrapper {
+    align-items: center;
+  }
+
+  .modal-content {
+    max-height: 80vh;
+  }
+}
+
+.error {
+  margin-bottom: 8px;
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+footer {
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+  color: #999;
+  font-size: 11px;
+  text-align: center;
+}
+
+footer a {
+  color: inherit;
+}
+
+@media (max-width: 768px) {
+  h1 {
+    font-size: 1.2rem;
+    margin-bottom: 8px;
+  }
+
+  .map {
+    height: 62vh;
+  }
+}

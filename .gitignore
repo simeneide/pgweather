@@ -4,3 +4,7 @@ forecasts/
 .venv/
 *.png
 backlog/
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
