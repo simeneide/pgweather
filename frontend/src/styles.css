@@ -288,13 +288,36 @@ body {
   line-height: 1.6;
 }
 
+.legend-row {
+  white-space: nowrap;
+}
+
+.legend-label {
+  font-weight: 600;
+  margin-right: 4px;
+}
+
 .legend-dot {
   display: inline-block;
   width: 10px;
   height: 10px;
   border-radius: 50%;
   margin-right: 2px;
+  margin-left: 4px;
   vertical-align: middle;
+}
+
+.legend-ring {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 3px solid;
+  background: transparent;
+  margin-right: 2px;
+  margin-left: 4px;
+  vertical-align: middle;
+  box-sizing: border-box;
 }
 
 .summary,

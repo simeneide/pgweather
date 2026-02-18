@@ -57,7 +57,6 @@ function App() {
   const [showTakeoffResults, setShowTakeoffResults] = useState(false);
   const [windAltitude, setWindAltitude] = useState("off");
   const [modalOpen, setModalOpen] = useState(false);
-  const [mapColorMode, setMapColorMode] = useState("suitability");
 
   const { mapPayload, error: mapError } = useMapPayload({
     selectedTime,
@@ -282,20 +281,12 @@ function App() {
           <option value="2000">Wind 2000m</option>
           <option value="3000">Wind 3000m</option>
         </select>
-
-        <div className="color-toggle">
-          <button className={mapColorMode === "suitability" ? "pill active" : "pill"}
-            onClick={() => setMapColorMode("suitability")}>Wind suitability</button>
-          <button className={mapColorMode === "thermal" ? "pill active" : "pill"}
-            onClick={() => setMapColorMode("thermal")}>Thermals</button>
-        </div>
       </div>
 
       <div className="map-shell">
         <ForecastMap
           mapPayload={mapPayload}
           selectedName={selectedName}
-          mapColorMode={mapColorMode}
           onSelectName={handleMapSelectName}
         />
       </div>

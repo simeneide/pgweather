@@ -5,7 +5,21 @@ import { pickNearestFeatureName } from "../lib/nearest";
 
 const EMPTY_FC = { type: "FeatureCollection", features: [] };
 
-const THERMAL_COLOR = [
+/* Thermal height AGL (metres) — center fill color */
+const THERMAL_HEIGHT_COLOR = [
+  "interpolate",
+  ["linear"],
+  ["get", "thermal_top"],
+  0, "#d9d9d9",
+  200, "#fff6a4",
+  600, "#ffd75a",
+  1000, "#ff9f35",
+  1500, "#ef5a2f",
+  2500, "#b91c1c"
+];
+
+/* Same scale for area polygons (peak_thermal_velocity) */
+const AREA_THERMAL_COLOR = [
   "interpolate",
   ["linear"],
   ["get", "peak_thermal_velocity"],
@@ -17,6 +31,7 @@ const THERMAL_COLOR = [
   5, "#b91c1c"
 ];
 
+/* Takeoff suitability — circle stroke color */
 const SUITABILITY_COLOR = ["get", "suitability_color"];
 
 const OSM_STYLE = {
@@ -42,7 +57,7 @@ const OSM_STYLE = {
       id: "areas-fill",
       type: "fill",
       source: "areas",
-      paint: { "fill-color": THERMAL_COLOR, "fill-opacity": 0.3 }
+      paint: { "fill-color": AREA_THERMAL_COLOR, "fill-opacity": 0.3 }
     },
     {
       id: "areas-line",
@@ -61,8 +76,8 @@ const OSM_STYLE = {
       type: "circle",
       source: "points",
       paint: {
-        "circle-radius": ["case", ["==", ["get", "selected"], 1], 14, 9],
-        "circle-color": "rgba(15,23,42,0.6)"
+        "circle-radius": ["case", ["==", ["get", "selected"], 1], 16, 11],
+        "circle-color": "rgba(15,23,42,0.5)"
       }
     },
     {
@@ -70,8 +85,10 @@ const OSM_STYLE = {
       type: "circle",
       source: "points",
       paint: {
-        "circle-radius": ["case", ["==", ["get", "selected"], 1], 10, 6],
-        "circle-color": THERMAL_COLOR
+        "circle-radius": ["case", ["==", ["get", "selected"], 1], 11, 7],
+        "circle-color": THERMAL_HEIGHT_COLOR,
+        "circle-stroke-color": SUITABILITY_COLOR,
+        "circle-stroke-width": ["case", ["==", ["get", "selected"], 1], 4, 3]
       }
     }
   ]
@@ -115,7 +132,7 @@ function buildGeoJson(mapPayload, selectedName) {
   };
 }
 
-export function ForecastMap({ mapPayload, selectedName, mapColorMode, onSelectName }) {
+export function ForecastMap({ mapPayload, selectedName, onSelectName }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const [mapInitError, setMapInitError] = useState("");
@@ -220,37 +237,24 @@ export function ForecastMap({ mapPayload, selectedName, mapColorMode, onSelectNa
     }
   }, [mapPayload, selectedName]);
 
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-    map.setPaintProperty(
-      "points-fill",
-      "circle-color",
-      mapColorMode === "suitability" ? SUITABILITY_COLOR : THERMAL_COLOR
-    );
-  }, [mapColorMode]);
-
-  const legend = useMemo(() => {
-    if (mapColorMode === "suitability") {
-      return (
-        <>
-          <span className="legend-dot" style={{ background: "#4caf50" }} /> Suitable{" "}
-          <span className="legend-dot" style={{ background: "#ff9800" }} /> Marginal{" "}
-          <span className="legend-dot" style={{ background: "#f44336" }} /> Not suitable{" "}
-          <span className="legend-dot" style={{ background: "#9e9e9e" }} /> No data
-        </>
-      );
-    }
-    return (
-      <>
-        <span className="legend-dot" style={{ background: "#d9d9d9" }} /> 0{" "}
-        <span className="legend-dot" style={{ background: "#ffd75a" }} /> 1.5{" "}
-        <span className="legend-dot" style={{ background: "#ff9f35" }} /> 2.5{" "}
-        <span className="legend-dot" style={{ background: "#ef5a2f" }} /> 3.5{" "}
-        <span className="legend-dot" style={{ background: "#b91c1c" }} /> 5+ m/s
-      </>
-    );
-  }, [mapColorMode]);
+  const legend = useMemo(() => (
+    <>
+      <div className="legend-row">
+        <span className="legend-label">Height:</span>
+        <span className="legend-dot" style={{ background: "#d9d9d9" }} /> 0
+        <span className="legend-dot" style={{ background: "#ffd75a" }} /> 600
+        <span className="legend-dot" style={{ background: "#ff9f35" }} /> 1000
+        <span className="legend-dot" style={{ background: "#ef5a2f" }} /> 1500
+        <span className="legend-dot" style={{ background: "#b91c1c" }} /> 2500+ m
+      </div>
+      <div className="legend-row">
+        <span className="legend-label">Takeoff:</span>
+        <span className="legend-ring" style={{ borderColor: "#4caf50" }} /> Suitable{" "}
+        <span className="legend-ring" style={{ borderColor: "#ff9800" }} /> Marginal{" "}
+        <span className="legend-ring" style={{ borderColor: "#f44336" }} /> Not suitable
+      </div>
+    </>
+  ), []);
 
   return (
     <div style={{ position: "relative" }}>
