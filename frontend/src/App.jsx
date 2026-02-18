@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AirgramModal } from "./components/AirgramModal";
+import { BrandLogo } from "./components/BrandLogo";
 import { ForecastMap } from "./components/ForecastMap";
 import { useAirgramSummary } from "./hooks/useAirgramSummary";
 import { useFrontendMeta } from "./hooks/useFrontendMeta";
@@ -107,7 +108,7 @@ function App() {
 
   /* ---- Render ---- */
 
-  if (loading) return <div className="page">Loading...</div>;
+  if (loading) return <div className="page loading-state">Loading...</div>;
 
   const currentHour = selectedTime
     ? `${String(toLocalHour(selectedTime)).padStart(2, "0")}:00`
@@ -115,7 +116,9 @@ function App() {
 
   return (
     <div className="page">
-      <h1>Termikkvarselet</h1>
+      <header className="app-header">
+        <BrandLogo />
+      </header>
       {error ? <div className="error">{error}</div> : null}
 
       <div className="controls">
@@ -179,12 +182,14 @@ function App() {
         </div>
       </div>
 
-      <ForecastMap
-        mapPayload={mapPayload}
-        selectedName={selectedName}
-        mapColorMode={mapColorMode}
-        onSelectName={handleMapSelectName}
-      />
+      <div className="map-shell">
+        <ForecastMap
+          mapPayload={mapPayload}
+          selectedName={selectedName}
+          mapColorMode={mapColorMode}
+          onSelectName={handleMapSelectName}
+        />
+      </div>
       {summary ? (
         <div className="summary" onClick={() => setModalOpen(true)} role="button" tabIndex={0}>
           {summary}
@@ -209,7 +214,7 @@ function App() {
         nearestHourIso={nearestHourIso}
       />
 
-      <footer>
+      <footer className="app-footer">
         <div>Hosted and maintained by <a href="https://eide.ai">eide.ai</a></div>
         <div>
           Data: <a href="https://www.met.no/">MET Norway / MEPS</a> | Weather symbols: <a href="https://www.yr.no/">Yr</a> | Map: <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>

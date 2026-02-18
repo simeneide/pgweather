@@ -169,7 +169,7 @@ export function ForecastMap({ mapPayload, selectedName, mapColorMode, onSelectNa
       popup.setLngLat(e.lngLat).setHTML(`<div style="font-size:13px;line-height:1.4">
         <strong>${name}</strong><br>
         <span style="color:${suitColor};font-weight:700">${suitLabel}</span>
-        ${suitTip ? `<br><span style="color:#6b7280;font-size:11px">${suitTip}</span>` : ""}
+        ${suitTip ? `<br><span style="color:#94a3b8;font-size:11px">${suitTip}</span>` : ""}
         <br>Thermal: ${peakVel} m/s | Top: ${thermalTop}m
         <br>Wind: ${windDir} ${windSpd} m/s
       </div>`).addTo(map);

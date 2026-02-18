@@ -166,7 +166,7 @@ test("loads controls and map shell", async ({ page }) => {
 
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "Termikkvarselet" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "pgpilot forecast" })).toBeVisible();
   await expect(page.locator(".controls")).toBeVisible();
   await expect(page.locator(".map")).toBeVisible();
   await expect(page.getByText("Wed 18")).toBeVisible();

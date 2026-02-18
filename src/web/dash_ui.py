@@ -170,7 +170,7 @@ def _compute_layout_defaults() -> dict[str, object]:
 def create_dash_app() -> Dash:
     app = Dash(
         __name__,
-        title="Termikkvarselet",
+        title="pgpilot forecast",
         update_title=None,
         requests_pathname_prefix="/",
         suppress_callback_exceptions=True,
@@ -219,7 +219,7 @@ def create_dash_app() -> Dash:
                     },
                     **{"data-dummy": ""},
                 ),
-                html.H1("Termikkvarselet"),
+                html.H1("pgpilot forecast"),
                 # Map controls panel
                 html.Div(
                     [

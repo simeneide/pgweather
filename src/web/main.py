@@ -24,7 +24,7 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="pgweather", version="1.1.0")
+app = FastAPI(title="pgpilot forecast", version="1.1.0")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _FRONTEND_DIST = _PROJECT_ROOT / "frontend" / "dist"
