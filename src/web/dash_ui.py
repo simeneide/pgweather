@@ -122,13 +122,12 @@ def _compute_layout_defaults() -> dict[str, object]:
     if not available_times:
         raise RuntimeError("No forecast data available in detailed_forecasts")
 
-    location_options = forecast_service.get_takeoff_options(model_source=default_model)
+    location_options = [opt.model_dump() for opt in meta.takeoff_options]
     if not location_options:
         raise RuntimeError("No takeoff locations available")
     names = [option["value"] for option in location_options]
-    default_time = forecast_service.get_default_selected_time(
-        model_source=default_model
-    )
+    now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
+    default_time = min(available_times, key=lambda t: abs((t - now).total_seconds()))
 
     model_labels = {
         "meps": "MEPS (Nordic 2.5km)",
@@ -500,9 +499,7 @@ def create_dash_app() -> Dash:
         if not available_times:
             return (no_update,) * 9
 
-        location_options = forecast_service.get_takeoff_options(
-            model_source=model_source
-        )
+        location_options = [opt.model_dump() for opt in meta.takeoff_options]
 
         days_map = _group_times_by_day(available_times)
         day_keys = list(days_map.keys())
@@ -510,8 +507,11 @@ def create_dash_app() -> Dash:
         day_radio_opts = [{"label": _day_label(dk), "value": dk} for dk in day_keys]
 
         # Pick default day/time
-        default_time = forecast_service.get_default_selected_time(
-            model_source=model_source
+        now = dt.datetime.now(dt.timezone.utc).replace(
+            minute=0, second=0, microsecond=0
+        )
+        default_time = min(
+            available_times, key=lambda t: abs((t - now).total_seconds())
         )
         default_day = _to_local(default_time).date().isoformat()
         if default_day not in day_keys:
@@ -781,34 +781,81 @@ def create_dash_app() -> Dash:
         return "?" + urlencode(params, doseq=True)
 
     # -------------------------------------------------------------------
-    # Main figures callback — driven by store + controls
+    # Map figure callback — should remain responsive regardless of windgram
     # -------------------------------------------------------------------
     @app.callback(
         Output("map-graph", "figure"),
-        Output("airgram-graph", "figure"),
-        Output("summary-text", "children"),
-        Output("modal-title", "children"),
         Input("selected-time-store", "data"),
         Input("location-dropdown", "value"),
         Input("layer-radio", "data"),
         Input("zoom-slider", "data"),
-        Input("altitude-slider", "data"),
         Input("forecast-ts-store", "data"),
         Input("wind-altitude-dropdown", "value"),
         Input("model-source-store", "data"),
         State("map-graph", "relayoutData"),
     )
-    def update_figures(
+    def update_map_figure(
         selected_time_iso: str,
         selected_name: str | None,
         _map_layer: str,
         zoom: int,
-        altitude_max: int,
         forecast_ts_iso: str | None,
         wind_alt_value: str | None,
         model_source: str | None,
         map_relayout: dict | None = None,
-    ):
+    ) -> go.Figure:
+        ms = model_source or settings.default_model_source
+        forecast_ts = _from_iso(forecast_ts_iso) if forecast_ts_iso else None
+
+        if not selected_time_iso:
+            selected_time_iso = _to_iso(
+                forecast_service.get_default_selected_time(model_source=ms)
+            )
+        selected_time_utc = _from_iso(selected_time_iso)
+
+        wind_altitude: float | None = None
+        if wind_alt_value and wind_alt_value != "off":
+            try:
+                wind_altitude = float(wind_alt_value)
+            except ValueError:
+                wind_altitude = None
+
+        effective_zoom = zoom
+        if map_relayout and "map.zoom" in map_relayout:
+            try:
+                effective_zoom = int(round(map_relayout["map.zoom"]))
+            except (TypeError, ValueError):
+                pass
+
+        return forecast_service.build_map_figure(
+            selected_time=selected_time_utc,
+            selected_name=selected_name,
+            zoom=effective_zoom,
+            forecast_ts=forecast_ts,
+            wind_altitude=wind_altitude,
+            model_source=ms,
+        )
+
+    # -------------------------------------------------------------------
+    # Windgram callback — independent from map-specific interactions
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("airgram-graph", "figure"),
+        Output("summary-text", "children"),
+        Output("modal-title", "children"),
+        Input("selected-time-store", "data"),
+        Input("location-dropdown", "value"),
+        Input("altitude-slider", "data"),
+        Input("forecast-ts-store", "data"),
+        Input("model-source-store", "data"),
+    )
+    def update_windgram_and_summary(
+        selected_time_iso: str,
+        selected_name: str | None,
+        altitude_max: int,
+        forecast_ts_iso: str | None,
+        model_source: str | None,
+    ) -> tuple[go.Figure, str, str]:
         ms = model_source or settings.default_model_source
         forecast_ts = _from_iso(forecast_ts_iso) if forecast_ts_iso else None
 
@@ -819,36 +866,9 @@ def create_dash_app() -> Dash:
         selected_time_utc = _from_iso(selected_time_iso)
         selected_time_local = _to_local(selected_time_utc)
 
-        # Parse wind altitude: "off" or None means no overlay, else float
-        wind_altitude: float | None = None
-        if wind_alt_value and wind_alt_value != "off":
-            try:
-                wind_altitude = float(wind_alt_value)
-            except ValueError:
-                wind_altitude = None
-
-        # Use the actual map zoom if available from relayout data
-        effective_zoom = zoom
-        if map_relayout and "map.zoom" in map_relayout:
-            try:
-                effective_zoom = int(round(map_relayout["map.zoom"]))
-            except (TypeError, ValueError):
-                pass
-
-        map_fig = forecast_service.build_map_figure(
-            selected_time=selected_time_utc,
-            selected_name=selected_name,
-            zoom=effective_zoom,
-            forecast_ts=forecast_ts,
-            wind_altitude=wind_altitude,
-            model_source=ms,
-        )
-
-        # If no location selected, return empty airgram
         if not selected_name:
-            return map_fig, _empty_airgram(), "", ""
+            return _empty_airgram(), "", ""
 
-        # Build airgram for selected location
         day = selected_time_local.date()
         forecast_hours = forecast_service.get_forecast_hours_for_day(
             selected_name, day, forecast_ts=forecast_ts, model_source=ms
@@ -880,11 +900,10 @@ def create_dash_app() -> Dash:
             f" local ({age_hours:.1f}h ago)"
         )
 
-        # Modal title: location name + date
         date_label = selected_time_local.strftime("%a %d %b")
         modal_title = f"{selected_name} — {date_label}"
 
-        return map_fig, airgram_fig, merged, modal_title
+        return airgram_fig, merged, modal_title
 
     # -------------------------------------------------------------------
     # Click map -> select location + open modal

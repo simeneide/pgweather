@@ -13,7 +13,7 @@ import json
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -54,6 +54,15 @@ _YR_USER_AGENT = "pgweather/1.0 github.com/simeneide/pgweather"
 _TS_CACHE: dict[str, CacheEntry[dt.datetime]] = {}
 
 
+def _prune_expired_cache_entries(
+    cache: dict[str, CacheEntry[Any]],
+    ttl_seconds: int,
+) -> None:
+    stale_keys = [k for k, v in cache.items() if not v.is_fresh(ttl_seconds)]
+    for key in stale_keys:
+        del cache[key]
+
+
 def _get_latest_forecast_timestamp(
     model_source: str | None = None,
 ) -> dt.datetime:
@@ -64,8 +73,9 @@ def _get_latest_forecast_timestamp(
         return cached.data
 
     query = (
-        "SELECT max(forecast_timestamp) AS ts FROM detailed_forecasts"
+        "SELECT forecast_timestamp AS ts FROM detailed_forecasts"
         f" WHERE model_source = '{ms}'"
+        " ORDER BY forecast_timestamp DESC LIMIT 1"
     )
     row = _db.read(query)
     ts = row[0, "ts"]
@@ -168,6 +178,8 @@ def load_metadata(
         t.replace(tzinfo=dt.timezone.utc) if t.tzinfo is None else t
         for t in times_df.get_column("time").to_list()
     ]
+    if not available_times:
+        raise RuntimeError(f"No available times for model_source='{ms}'")
 
     # Takeoff / area info — one row per name (areas may have multiple grid
     # points; DISTINCT ON picks one representative lat/lon per name).
@@ -382,15 +394,48 @@ def load_map_data(
     # velocity (max across all altitudes).  Uses a window function to compute
     # the max before DISTINCT ON picks the lowest-altitude row.
     query = f"""
-    SELECT DISTINCT ON (name)
-           name, latitude, longitude, point_type,
-           thermal_top, wind_speed,
-           MAX(thermal_velocity) OVER (PARTITION BY name) AS peak_thermal_velocity
-    FROM detailed_forecasts
-    WHERE forecast_timestamp = '{latest_ts.isoformat()}'
-      AND model_source = '{ms}'
-      AND time = '{selected_time.isoformat()}'
-    ORDER BY name, altitude
+    WITH filtered AS (
+        SELECT
+            name,
+            latitude,
+            longitude,
+            point_type,
+            altitude,
+            thermal_top,
+            wind_speed,
+            thermal_velocity
+        FROM detailed_forecasts
+        WHERE forecast_timestamp = '{latest_ts.isoformat()}'
+          AND model_source = '{ms}'
+          AND time = '{selected_time.isoformat()}'
+    ),
+    surface AS (
+        SELECT DISTINCT ON (name)
+            name,
+            latitude,
+            longitude,
+            point_type,
+            thermal_top,
+            wind_speed
+        FROM filtered
+        ORDER BY name, altitude
+    ),
+    peaks AS (
+        SELECT name, MAX(thermal_velocity) AS peak_thermal_velocity
+        FROM filtered
+        GROUP BY name
+    )
+    SELECT
+        s.name,
+        s.latitude,
+        s.longitude,
+        s.point_type,
+        s.thermal_top,
+        s.wind_speed,
+        p.peak_thermal_velocity
+    FROM surface s
+    JOIN peaks p USING (name)
+    ORDER BY s.name
     """
     df = _db.read(query)
 
@@ -612,8 +657,23 @@ def build_map_figure(
     wind_altitude: Optional[float] = None,
     model_source: str | None = None,
 ) -> go.Figure:
+    ms = model_source or settings.default_model_source
+    resolved_ts = _resolve_forecast_ts(forecast_ts, model_source=ms)
+    wind_alt_key = "off" if wind_altitude is None else str(int(wind_altitude))
+    cache_key = (
+        f"{ms}|{resolved_ts.isoformat()}|{selected_time.isoformat()}|"
+        f"{selected_name or ''}|{zoom}|{wind_alt_key}"
+    )
+
+    _prune_expired_cache_entries(_MAP_FIG_CACHE, settings.data_ttl_seconds)
+    cached_fig = _MAP_FIG_CACHE.get(cache_key)
+    if cached_fig is not None:
+        return go.Figure(cached_fig.data)
+
     map_df = load_map_data(
-        selected_time, forecast_ts=forecast_ts, model_source=model_source
+        selected_time,
+        forecast_ts=resolved_ts,
+        model_source=ms,
     )
 
     # Climb rate colorscale: 0–5 m/s
@@ -746,8 +806,8 @@ def build_map_figure(
         grid_df = load_grid_wind_data(
             selected_time,
             altitude=wind_altitude,
-            forecast_ts=forecast_ts,
-            model_source=model_source,
+            forecast_ts=resolved_ts,
+            model_source=ms,
         )
         if len(grid_df) > 0:
             g_lat = grid_df.get_column("latitude").to_numpy()
@@ -897,6 +957,11 @@ def build_map_figure(
             yref="paper",
             showarrow=False,
         )
+
+    _MAP_FIG_CACHE[cache_key] = CacheEntry(
+        loaded_at=dt.datetime.now(dt.timezone.utc),
+        data=fig.to_dict(),
+    )
     return fig
 
 
@@ -949,6 +1014,38 @@ def _deg_to_compass(deg: float) -> str:
     return _COMPASS_LABELS[int((deg + 11.25) % 360 / 22.5)]
 
 
+def _add_selected_hour_highlight(
+    fig: go.Figure, selected_hour: Optional[int]
+) -> go.Figure:
+    """Add a translucent highlight column for the selected local hour."""
+    if selected_hour is None:
+        return fig
+
+    category_array = fig.layout.xaxis.categoryarray
+    if not category_array:
+        return fig
+
+    time_labels = list(category_array)
+    selected_label = f"{selected_hour:02d}h"
+    if selected_label not in time_labels:
+        return fig
+
+    idx = time_labels.index(selected_label)
+    fig.add_shape(
+        type="rect",
+        x0=idx - 0.5,
+        x1=idx + 0.5,
+        y0=0,
+        y1=float(fig.layout.yaxis.range[1]),
+        xref="x",
+        yref="y",
+        fillcolor="rgba(59,130,246,0.10)",
+        line=dict(width=1.5, color="rgba(59,130,246,0.4)"),
+        layer="above",
+    )
+    return fig
+
+
 # Thermal velocity colorscale: 0–5 m/s climb rate
 _THERMAL_COLORSCALE = [
     [0.0, "rgb(255,255,255)"],  # 0 m/s – white (no thermals)
@@ -967,6 +1064,9 @@ _THERMAL_COLORSCALE = [
 # Airgram figure builder
 # ---------------------------------------------------------------------------
 
+_MAP_FIG_CACHE: dict[str, CacheEntry[dict[str, Any]]] = {}
+_AIRGRAM_FIG_CACHE: dict[str, CacheEntry[dict[str, Any]]] = {}
+
 
 def build_airgram_figure(
     target_name: str,
@@ -977,11 +1077,34 @@ def build_airgram_figure(
     forecast_ts: Optional[dt.datetime] = None,
     model_source: str | None = None,
 ) -> go.Figure:
+    ms = model_source or settings.default_model_source
+    resolved_ts = _resolve_forecast_ts(forecast_ts, model_source=ms)
+    yr_signature = ""
+    if yr_entries:
+        yr_signature = "|".join(
+            (
+                f"{e.get('local_hour')}:{e.get('symbol_code', '')}"
+                f":{e.get('air_temperature')}"
+            )
+            for e in yr_entries
+        )
+    cache_key = (
+        f"{ms}|{resolved_ts.isoformat()}|{target_name}|{selected_date.isoformat()}|"
+        f"{altitude_max}|{yr_signature}"
+    )
+
+    _prune_expired_cache_entries(_AIRGRAM_FIG_CACHE, settings.data_ttl_seconds)
+    cached_fig = _AIRGRAM_FIG_CACHE.get(cache_key)
+    if cached_fig is not None:
+        return _add_selected_hour_highlight(
+            go.Figure(cached_fig.data), selected_hour=selected_hour
+        )
+
     location_data = load_windgram_data(
         target_name,
         selected_date,
-        forecast_ts=forecast_ts,
-        model_source=model_source,
+        forecast_ts=resolved_ts,
+        model_source=ms,
     )
 
     display_start_hour = 8
@@ -1037,19 +1160,11 @@ def build_airgram_figure(
     )
 
     # Format time labels as "HHh"
-    time_labels = []
-    for t in new_timestamps:
-        if hasattr(t, "strftime"):
-            time_labels.append(t.strftime("%Hh"))
-        else:
-            time_labels.append(str(t))
+    time_labels = [t.strftime("%Hh") for t in new_timestamps]
 
-    # Add a formatted time_label column for consistent x-axis values
-    ts_to_label = {t: lbl for t, lbl in zip(new_timestamps, time_labels)}
+    # Add formatted time labels for consistent x-axis values
     plot_frame = plot_frame.with_columns(
-        pl.col("time")
-        .map_elements(lambda t: ts_to_label.get(t, str(t)), return_dtype=pl.Utf8)
-        .alias("time_label")
+        pl.col("time").dt.strftime("%Hh").alias("time_label")
     )
 
     fig = go.Figure()
@@ -1092,14 +1207,10 @@ def build_airgram_figure(
     # --- 1b) Thermal top line ---
     # Show computed thermal top as a dashed line so boundary is clear
     thermal_tops_per_time = (
-        plot_frame.group_by("time_label")
+        plot_frame.group_by("time")
         .agg(pl.col("thermal_top").first())
-        .sort(
-            pl.col("time_label").map_elements(
-                lambda lbl: time_labels.index(lbl) if lbl in time_labels else 999,
-                return_dtype=pl.Int64,
-            )
-        )
+        .sort("time")
+        .with_columns(pl.col("time").dt.strftime("%Hh").alias("time_label"))
     )
     tt_labels = thermal_tops_per_time["time_label"].to_list()
     tt_vals = thermal_tops_per_time["thermal_top"].to_numpy()
@@ -1233,26 +1344,7 @@ def build_airgram_figure(
                 )
             )
 
-    # --- 5) Highlighted column for selected hour ---
-    selected_label = f"{selected_hour:02d}h" if selected_hour is not None else None
-    if selected_label and selected_label in time_labels:
-        idx = time_labels.index(selected_label)
-        # For a category axis, shape x coords use category values directly.
-        # To span the full column width we go from idx-0.5 to idx+0.5
-        fig.add_shape(
-            type="rect",
-            x0=idx - 0.5,
-            x1=idx + 0.5,
-            y0=0,
-            y1=altitude_max,
-            xref="x",
-            yref="y",
-            fillcolor="rgba(59,130,246,0.10)",
-            line=dict(width=1.5, color="rgba(59,130,246,0.4)"),
-            layer="above",
-        )
-
-    # --- 6) Snow depth annotation at bottom of chart ---
+    # --- 5) Snow depth annotation at bottom of chart ---
     if "snow_depth" in location_data.columns:
         snow_vals = location_data.select("snow_depth").to_series().drop_nulls()
         if len(snow_vals) > 0:
@@ -1314,7 +1406,11 @@ def build_airgram_figure(
         dragmode=False,
     )
 
-    return fig
+    _AIRGRAM_FIG_CACHE[cache_key] = CacheEntry(
+        loaded_at=dt.datetime.now(dt.timezone.utc),
+        data=fig.to_dict(),
+    )
+    return _add_selected_hour_highlight(fig, selected_hour=selected_hour)
 
 
 # ---------------------------------------------------------------------------

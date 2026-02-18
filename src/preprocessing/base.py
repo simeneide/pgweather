@@ -579,11 +579,27 @@ def save_forecasts_to_db(
     # Ensure indexes exist
     try:
         db.execute_query(
+            "CREATE INDEX IF NOT EXISTS idx_detailed_model_forecast "
+            "ON detailed_forecasts (model_source, forecast_timestamp DESC)"
+        )
+        db.execute_query(
+            "CREATE INDEX IF NOT EXISTS idx_detailed_model_forecast_time "
+            "ON detailed_forecasts (model_source, forecast_timestamp, time)"
+        )
+        db.execute_query(
+            "CREATE INDEX IF NOT EXISTS idx_detailed_map_lookup "
+            "ON detailed_forecasts (model_source, forecast_timestamp, time, name, altitude)"
+        )
+        db.execute_query(
+            "CREATE INDEX IF NOT EXISTS idx_detailed_windgram_lookup "
+            "ON detailed_forecasts (model_source, forecast_timestamp, name, point_type, time, altitude)"
+        )
+        db.execute_query(
             "CREATE INDEX IF NOT EXISTS idx_gridded_time_alt "
-            "ON gridded_forecasts (time, altitude)"
+            "ON gridded_forecasts (model_source, forecast_timestamp, time, altitude)"
         )
     except Exception:
-        pass
+        logger.exception("Could not ensure forecast indexes")
     logger.info("Gridded forecast saved.")
 
 
