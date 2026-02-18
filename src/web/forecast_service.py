@@ -51,20 +51,28 @@ _YR_USER_AGENT = "pgweather/1.0 github.com/simeneide/pgweather"
 # ---------------------------------------------------------------------------
 # Cached latest forecast timestamp (short TTL, shared across queries)
 # ---------------------------------------------------------------------------
-_TS_CACHE: CacheEntry[dt.datetime] | None = None
+_TS_CACHE: dict[str, CacheEntry[dt.datetime]] = {}
 
 
-def _get_latest_forecast_timestamp() -> dt.datetime:
+def _get_latest_forecast_timestamp(
+    model_source: str | None = None,
+) -> dt.datetime:
     """Return the latest forecast_timestamp, cached with short TTL."""
-    global _TS_CACHE
-    if _TS_CACHE is not None and _TS_CACHE.is_fresh(settings.data_ttl_seconds):
-        return _TS_CACHE.data
+    ms = model_source or settings.default_model_source
+    cached = _TS_CACHE.get(ms)
+    if cached is not None and cached.is_fresh(settings.data_ttl_seconds):
+        return cached.data
 
-    query = "SELECT max(forecast_timestamp) AS ts FROM detailed_forecasts"
+    query = (
+        "SELECT max(forecast_timestamp) AS ts FROM detailed_forecasts"
+        f" WHERE model_source = '{ms}'"
+    )
     row = _db.read(query)
     ts = row[0, "ts"]
     if ts is None:
-        raise RuntimeError("No forecasts in detailed_forecasts table")
+        raise RuntimeError(
+            f"No forecasts in detailed_forecasts for model_source='{ms}'"
+        )
 
     # Ensure timezone-aware
     if isinstance(ts, dt.datetime):
@@ -73,7 +81,7 @@ def _get_latest_forecast_timestamp() -> dt.datetime:
     else:
         raise RuntimeError(f"Unexpected type for forecast_timestamp: {type(ts)}")
 
-    _TS_CACHE = CacheEntry(loaded_at=dt.datetime.now(dt.timezone.utc), data=ts)
+    _TS_CACHE[ms] = CacheEntry(loaded_at=dt.datetime.now(dt.timezone.utc), data=ts)
     return ts
 
 
@@ -87,20 +95,22 @@ def _ensure_tz_utc(ts: dt.datetime) -> dt.datetime:
 # ---------------------------------------------------------------------------
 # Available forecast generations (for debug mode)
 # ---------------------------------------------------------------------------
-_FORECAST_TS_CACHE: CacheEntry[list[dt.datetime]] | None = None
+_FORECAST_TS_CACHE: dict[str, CacheEntry[list[dt.datetime]]] = {}
 
 
-def get_available_forecast_timestamps() -> list[dt.datetime]:
+def get_available_forecast_timestamps(
+    model_source: str | None = None,
+) -> list[dt.datetime]:
     """Return all distinct forecast_timestamps in the DB, newest first."""
-    global _FORECAST_TS_CACHE
-    if _FORECAST_TS_CACHE is not None and _FORECAST_TS_CACHE.is_fresh(
-        settings.data_ttl_seconds
-    ):
-        return _FORECAST_TS_CACHE.data
+    ms = model_source or settings.default_model_source
+    cached = _FORECAST_TS_CACHE.get(ms)
+    if cached is not None and cached.is_fresh(settings.data_ttl_seconds):
+        return cached.data
 
-    query = """
+    query = f"""
     SELECT DISTINCT forecast_timestamp
     FROM detailed_forecasts
+    WHERE model_source = '{ms}'
     ORDER BY forecast_timestamp DESC
     """
     df = _db.read(query)
@@ -108,17 +118,20 @@ def get_available_forecast_timestamps() -> list[dt.datetime]:
         _ensure_tz_utc(t) for t in df.get_column("forecast_timestamp").to_list()
     ]
 
-    _FORECAST_TS_CACHE = CacheEntry(
+    _FORECAST_TS_CACHE[ms] = CacheEntry(
         loaded_at=dt.datetime.now(dt.timezone.utc), data=timestamps
     )
     return timestamps
 
 
-def _resolve_forecast_ts(forecast_ts: Optional[dt.datetime] = None) -> dt.datetime:
+def _resolve_forecast_ts(
+    forecast_ts: Optional[dt.datetime] = None,
+    model_source: str | None = None,
+) -> dt.datetime:
     """Return *forecast_ts* if given, otherwise the latest."""
     if forecast_ts is not None:
         return _ensure_tz_utc(forecast_ts)
-    return _get_latest_forecast_timestamp()
+    return _get_latest_forecast_timestamp(model_source=model_source)
 
 
 # ---------------------------------------------------------------------------
@@ -129,10 +142,12 @@ _META_CACHE: dict[str, CacheEntry[ForecastMeta]] = {}
 
 def load_metadata(
     forecast_ts: Optional[dt.datetime] = None,
+    model_source: str | None = None,
 ) -> ForecastMeta:
     """Lightweight metadata for populating the UI — no full DataFrame load."""
-    resolved_ts = _resolve_forecast_ts(forecast_ts)
-    cache_key = resolved_ts.isoformat()
+    ms = model_source or settings.default_model_source
+    resolved_ts = _resolve_forecast_ts(forecast_ts, model_source=ms)
+    cache_key = f"{ms}|{resolved_ts.isoformat()}"
 
     cached = _META_CACHE.get(cache_key)
     if cached is not None and cached.is_fresh(settings.data_ttl_seconds):
@@ -145,6 +160,7 @@ def load_metadata(
     SELECT DISTINCT time
     FROM detailed_forecasts
     WHERE forecast_timestamp = '{latest_ts.isoformat()}'
+      AND model_source = '{ms}'
     ORDER BY time
     """
     times_df = _db.read(times_query)
@@ -160,6 +176,7 @@ def load_metadata(
     SELECT DISTINCT ON (name) name, latitude, longitude, point_type
     FROM detailed_forecasts
     WHERE forecast_timestamp = '{latest_ts.isoformat()}'
+      AND model_source = '{ms}'
       AND time = '{ref_time.isoformat()}'
     ORDER BY name
     """
@@ -228,27 +245,58 @@ def _build_takeoff_options(
 # ---------------------------------------------------------------------------
 
 
-def get_latest_forecast_timestamp() -> dt.datetime:
-    return _get_latest_forecast_timestamp()
+def get_latest_forecast_timestamp(
+    model_source: str | None = None,
+) -> dt.datetime:
+    return _get_latest_forecast_timestamp(model_source=model_source)
 
 
-def get_available_times() -> list[dt.datetime]:
-    return load_metadata().available_times
+def get_available_times(model_source: str | None = None) -> list[dt.datetime]:
+    return load_metadata(model_source=model_source).available_times
 
 
-def get_takeoff_options() -> list[dict[str, str]]:
+def get_takeoff_options(model_source: str | None = None) -> list[dict[str, str]]:
     """Return takeoff options as plain dicts for Dash dropdown compatibility."""
-    return [opt.model_dump() for opt in load_metadata().takeoff_options]
+    return [
+        opt.model_dump()
+        for opt in load_metadata(model_source=model_source).takeoff_options
+    ]
 
 
-def get_takeoff_names() -> list[str]:
-    return sorted(t.name for t in load_metadata().takeoffs if t.point_type != "area")
+def get_takeoff_names(model_source: str | None = None) -> list[str]:
+    return sorted(
+        t.name
+        for t in load_metadata(model_source=model_source).takeoffs
+        if t.point_type != "area"
+    )
 
 
-def get_default_selected_time() -> dt.datetime:
-    times = get_available_times()
+def get_default_selected_time(model_source: str | None = None) -> dt.datetime:
+    times = get_available_times(model_source=model_source)
     now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
     return min(times, key=lambda t: abs((t - now).total_seconds()))
+
+
+def get_available_model_sources() -> list[str]:
+    """Return distinct model_source values that have data in the DB.
+
+    The default model source (``settings.default_model_source``) is always
+    placed first so the UI starts with it selected.
+    """
+    query = "SELECT DISTINCT model_source FROM detailed_forecasts ORDER BY model_source"
+    try:
+        df = _db.read(query)
+        sources = df.get_column("model_source").to_list()
+    except Exception:
+        logger.warning("Could not query available model sources")
+        return [settings.default_model_source]
+
+    # Ensure default model is first
+    default = settings.default_model_source
+    if default in sources:
+        sources.remove(default)
+        sources.insert(0, default)
+    return sources
 
 
 # ---------------------------------------------------------------------------
@@ -265,14 +313,16 @@ def load_grid_wind_data(
     selected_time: dt.datetime,
     altitude: float = 1000,
     forecast_ts: Optional[dt.datetime] = None,
+    model_source: str | None = None,
 ) -> pl.DataFrame:
     """Load gridded wind vectors for a specific time and altitude level.
 
     Returns a DataFrame with one row per grid point, containing lat/lon and
     wind components for rendering wind arrows on the map.
     """
-    latest_ts = _resolve_forecast_ts(forecast_ts)
-    cache_key = f"{latest_ts.isoformat()}|{selected_time.isoformat()}|{altitude}"
+    ms = model_source or settings.default_model_source
+    latest_ts = _resolve_forecast_ts(forecast_ts, model_source=ms)
+    cache_key = f"{ms}|{latest_ts.isoformat()}|{selected_time.isoformat()}|{altitude}"
 
     cached = _GRID_WIND_CACHE.get(cache_key)
     if cached is not None and cached.is_fresh(settings.data_ttl_seconds):
@@ -283,6 +333,7 @@ def load_grid_wind_data(
            thermal_velocity, thermal_top, elevation
     FROM gridded_forecasts
     WHERE forecast_timestamp = '{latest_ts.isoformat()}'
+      AND model_source = '{ms}'
       AND time = '{selected_time.isoformat()}'
       AND altitude = {altitude}
     """
@@ -313,13 +364,15 @@ _MAP_CACHE: dict[str, CacheEntry[pl.DataFrame]] = {}
 def load_map_data(
     selected_time: dt.datetime,
     forecast_ts: Optional[dt.datetime] = None,
+    model_source: str | None = None,
 ) -> pl.DataFrame:
     """Load data for map view: one row per (name, point_type) at *selected_time*.
 
     Returns a small DataFrame (~520 rows) with columns needed for the map.
     """
-    latest_ts = _resolve_forecast_ts(forecast_ts)
-    cache_key = f"{latest_ts.isoformat()}|{selected_time.isoformat()}"
+    ms = model_source or settings.default_model_source
+    latest_ts = _resolve_forecast_ts(forecast_ts, model_source=ms)
+    cache_key = f"{ms}|{latest_ts.isoformat()}|{selected_time.isoformat()}"
 
     cached = _MAP_CACHE.get(cache_key)
     if cached is not None and cached.is_fresh(settings.data_ttl_seconds):
@@ -335,6 +388,7 @@ def load_map_data(
            MAX(thermal_velocity) OVER (PARTITION BY name) AS peak_thermal_velocity
     FROM detailed_forecasts
     WHERE forecast_timestamp = '{latest_ts.isoformat()}'
+      AND model_source = '{ms}'
       AND time = '{selected_time.isoformat()}'
     ORDER BY name, altitude
     """
@@ -362,13 +416,15 @@ def load_windgram_data(
     name: str,
     date: dt.date,
     forecast_ts: Optional[dt.datetime] = None,
+    model_source: str | None = None,
 ) -> pl.DataFrame:
     """Load all altitude data for a single location on a given day.
 
     Returns a DataFrame with ~294 rows (14 hours × 21 altitudes).
     """
-    latest_ts = _resolve_forecast_ts(forecast_ts)
-    cache_key = f"{latest_ts.isoformat()}|{name}|{date.isoformat()}"
+    ms = model_source or settings.default_model_source
+    latest_ts = _resolve_forecast_ts(forecast_ts, model_source=ms)
+    cache_key = f"{ms}|{latest_ts.isoformat()}|{name}|{date.isoformat()}"
 
     cached = _WINDGRAM_CACHE.get(cache_key)
     if cached is not None and cached.is_fresh(settings.data_ttl_seconds):
@@ -392,6 +448,7 @@ def load_windgram_data(
            thermal_height_above_ground, snow_depth
     FROM detailed_forecasts
     WHERE forecast_timestamp = '{latest_ts.isoformat()}'
+      AND model_source = '{ms}'
       AND name = '{name}'
       AND point_type = 'takeoff'
       AND time >= '{day_start_utc.isoformat()}'
@@ -468,9 +525,12 @@ def get_forecast_hours_for_day(
     name: str,
     day: dt.date,
     forecast_ts: Optional[dt.datetime] = None,
+    model_source: str | None = None,
 ) -> list[int]:
-    """Return the local hours that have MEPS forecast data for *name* on *day*."""
-    df = load_windgram_data(name, day, forecast_ts=forecast_ts)
+    """Return the local hours that have forecast data for *name* on *day*."""
+    df = load_windgram_data(
+        name, day, forecast_ts=forecast_ts, model_source=model_source
+    )
     if len(df) == 0:
         return []
     hours = (
@@ -488,10 +548,11 @@ def get_yr_weather_for_day(
     name: str,
     day: dt.date,
     restrict_to_hours: Optional[list[int]] = None,
+    model_source: str | None = None,
 ) -> list[dict]:
     """Return Yr hourly weather for *name* on *day* (local time)."""
     local_tz = ZoneInfo("Europe/Oslo")
-    meta = load_metadata()
+    meta = load_metadata(model_source=model_source)
 
     # Look up lat/lon for this takeoff
     loc = [t for t in meta.takeoffs if t.name == name and t.point_type != "area"]
@@ -549,8 +610,11 @@ def build_map_figure(
     zoom: int,
     forecast_ts: Optional[dt.datetime] = None,
     wind_altitude: Optional[float] = None,
+    model_source: str | None = None,
 ) -> go.Figure:
-    map_df = load_map_data(selected_time, forecast_ts=forecast_ts)
+    map_df = load_map_data(
+        selected_time, forecast_ts=forecast_ts, model_source=model_source
+    )
 
     # Climb rate colorscale: 0–5 m/s
     thermal_colorscale = [
@@ -680,7 +744,10 @@ def build_map_figure(
     # we show the full grid.
     if wind_altitude is not None:
         grid_df = load_grid_wind_data(
-            selected_time, altitude=wind_altitude, forecast_ts=forecast_ts
+            selected_time,
+            altitude=wind_altitude,
+            forecast_ts=forecast_ts,
+            model_source=model_source,
         )
         if len(grid_df) > 0:
             g_lat = grid_df.get_column("latitude").to_numpy()
@@ -908,9 +975,13 @@ def build_airgram_figure(
     yr_entries: Optional[list[dict]] = None,
     selected_hour: Optional[int] = None,
     forecast_ts: Optional[dt.datetime] = None,
+    model_source: str | None = None,
 ) -> go.Figure:
     location_data = load_windgram_data(
-        target_name, selected_date, forecast_ts=forecast_ts
+        target_name,
+        selected_date,
+        forecast_ts=forecast_ts,
+        model_source=model_source,
     )
 
     display_start_hour = 8
@@ -1255,8 +1326,11 @@ def get_summary(
     selected_name: str,
     selected_time: dt.datetime,
     forecast_ts: Optional[dt.datetime] = None,
+    model_source: str | None = None,
 ) -> str:
-    map_df = load_map_data(selected_time, forecast_ts=forecast_ts)
+    map_df = load_map_data(
+        selected_time, forecast_ts=forecast_ts, model_source=model_source
+    )
     row = map_df.filter(
         (pl.col("point_type") != "area") & (pl.col("name") == selected_name)
     )

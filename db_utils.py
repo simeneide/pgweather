@@ -36,15 +36,33 @@ class Database:
         )
         return True
 
-    def replace_data(self, df: pl.DataFrame, table_name: str) -> bool:
-        """Replace all data in *table_name* without dropping the table.
+    def replace_data(
+        self,
+        df: pl.DataFrame,
+        table_name: str,
+        model_source: Optional[str] = None,
+    ) -> bool:
+        """Replace data in *table_name*, optionally scoped to *model_source*.
 
-        Uses TRUNCATE (fast, preserves indexes/schema) then appends new data.
+        When *model_source* is given, only rows matching that source are
+        deleted (allowing data from other models to coexist).  When ``None``,
+        the table is truncated entirely (legacy behaviour).
+
         Falls back to ``if_table_exists="replace"`` if the table doesn't exist.
         """
         table_exists = True
         try:
-            self.execute_query(f"TRUNCATE TABLE {table_name}")
+            if model_source is not None:
+                import adbc_driver_postgresql.dbapi as pg_dbapi
+
+                with pg_dbapi.connect(self.uri) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            f"DELETE FROM {table_name} WHERE model_source = '{model_source}'"
+                        )
+                    conn.commit()
+            else:
+                self.execute_query(f"TRUNCATE TABLE {table_name}")
         except Exception:
             # Table may not exist yet — let write_database create it
             table_exists = False
@@ -62,11 +80,13 @@ class Database:
         df: pl.DataFrame,
         table_name: str,
         forecast_timestamp: str,
+        model_source: str = "meps",
     ) -> bool:
-        """Replace rows for a specific forecast_timestamp, keeping other forecasts.
+        """Replace rows for a specific (forecast_timestamp, model_source).
 
-        Deletes existing rows matching *forecast_timestamp* then appends *df*.
-        Falls back to creating the table if it doesn't exist yet.
+        Deletes existing rows matching *forecast_timestamp* **and**
+        *model_source* then appends *df*.  Falls back to creating the table
+        if it doesn't exist yet.
         """
         import adbc_driver_postgresql.dbapi as pg_dbapi
 
@@ -75,7 +95,9 @@ class Database:
             with pg_dbapi.connect(self.uri) as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        f"DELETE FROM {table_name} WHERE forecast_timestamp = '{forecast_timestamp}'"
+                        f"DELETE FROM {table_name} "
+                        f"WHERE forecast_timestamp = '{forecast_timestamp}' "
+                        f"AND model_source = '{model_source}'"
                     )
                 conn.commit()
         except Exception:

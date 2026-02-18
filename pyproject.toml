@@ -27,4 +27,6 @@ dependencies = [
     "uvicorn>=0.35.0",
     "dash>=3.2.0",
     "pydantic-settings>=2.11.0",
+    "cfgrib>=0.9.15.1",
+    "eccodes>=2.45.0",
 ]

@@ -1,53 +1,69 @@
-# %%
+"""Utilities for fetching paragliding takeoff locations from ParaglidingEarth.com."""
+
+from __future__ import annotations
+
+import logging
+from typing import Optional
+
 import geojson
 import geopandas as gpd
 import requests
 
+logger = logging.getLogger(__name__)
 
-def fetch_takeoffs_norway(limit=None):
-    # docs
-    # https://www.paraglidingearth.com/api/
-    # URL of the GeoJSON endpoint
-    geo_json_query = "http://www.paraglidingearth.com/api/geojson/getCountrySites.php"
-    # Add query iso=578
-    # Send a GET request to the GeoJSON endpoint
-    params = {"iso": "NO"}
+# ParaglidingEarth API endpoint
+_API_URL = "http://www.paraglidingearth.com/api/geojson/getCountrySites.php"
+
+
+def fetch_takeoffs(
+    country_iso: str = "NO",
+    limit: Optional[int] = None,
+) -> Optional[gpd.GeoDataFrame]:
+    """Fetch takeoff locations for a country from ParaglidingEarth.com.
+
+    Parameters
+    ----------
+    country_iso : str
+        ISO country code (e.g. "NO" for Norway, "IN" for India).
+    limit : int, optional
+        Maximum number of sites to return.
+
+    Returns
+    -------
+    GeoDataFrame or None
+        Takeoff locations with geometry and properties, or None on failure.
+    """
+    params: dict[str, str | int] = {"iso": country_iso}
     if limit:
         params["limit"] = limit
 
-    # Send a GET request to the GeoJSON endpoint with the query parameter
-    response = requests.get(geo_json_query, params=params)
-    # Check if the request was successful
-    if response.status_code == 200:
-        # Parse the response as a GeoJSON object
-        data = geojson.loads(response.text)
-        # Print the GeoJSON data
-    else:
-        print(f"Error: Unable to fetch data (Status code: {response.status_code})")
+    try:
+        response = requests.get(_API_URL, params=params, timeout=30)
+        response.raise_for_status()
+    except requests.RequestException:
+        logger.exception("Failed to fetch takeoffs for country=%s", country_iso)
         return None
 
-    #
-    """
-    print(data)
-    {"features": [{"geometry": {"coordinates": [10.463, 59.9396], "type": "Point"}, "id": "6603", "properties": {"E": "0", "N": "0", "NE": "0", "NW": "0", "S": "0", "SE": "0", "SW": "0", "W": "0", "countryCode": "no", "ffvl_site_id": "0", "flatland": "0", "hanggliding": "0", "landing_lat": "", "landing_lng": "", "landing_parking_lat": "", "landing_parking_lng": "", "last_edit": "", "name": "Solfjellstua", "paragliding": "1", "pge_link": "http://www.paraglidingearth.com/?site=6603", "pge_site_id": "6603", "place": "paragliding takeoff", "soaring": "0", "takeoff_altitude": "314", "takeoff_description": "", "takeoff_parking_lat": "", "takeoff_parking_lng": "", "thermals": "0", "winch": "0", "xc": "0"}, "type": "Feature"}, {"geometry": {"coordinates": [9.17167, 62.0494], "type": "Point"}, "id": "6715", "properties": {"E": "0", "N": "0", "NE": "0", "NW": "0", "S": "2", "SE": "0", "SW": "2", "W": "0", "countryCode": "no", "ffvl_site_id": "0", "flatland": "0", "hanggliding": "0", "landing_lat": "", "landing_lng": "", "landing_parking_lat": "", "landing_parking_lng": "", "last_edit": "", "name": "Engjekollen - Dombes", "paragliding": "1", "pge_link": "http://www.paraglidingearth.com/?site=6715", "pge_site_id": "6715", "place": "paragliding takeoff", "soaring": "0", "takeoff_altitude": "1007", "takeoff_description": "", "takeoff_parking_lat": "", "takeoff_parking_lng": "", "thermals": "0", "winch": "0", "xc": "0"}, "type": "Feature"}], "type": "FeatureCollection"}
-    """
-    # %%
-    gdf = gpd.GeoDataFrame.from_features(data["features"])
-    # records = [
-    #     {
-    #         "latitude": feature["geometry"]["coordinates"][1],
-    #         "longitude": feature["geometry"]["coordinates"][0],
-    #         "name": feature["properties"]["name"],
-    #         "url" : feature["properties"]["pge_link"],
-    #     }
-    #     for feature in data['features']
-    # ]
+    data = geojson.loads(response.text)
+    if not data.get("features"):
+        logger.warning("No takeoff features found for country=%s", country_iso)
+        return None
 
-    # # Create a Polars DataFrame from the extracted records
-    # df = pl.DataFrame(records)
+    gdf = gpd.GeoDataFrame.from_features(data["features"])
+    logger.info("Fetched %d takeoffs for country=%s", len(gdf), country_iso)
     return gdf
 
 
+def fetch_takeoffs_norway(limit: Optional[int] = None) -> Optional[gpd.GeoDataFrame]:
+    """Fetch Norwegian takeoff locations (backward-compatible wrapper)."""
+    return fetch_takeoffs(country_iso="NO", limit=limit)
+
+
 if __name__ == "__main__":
-    # Fetch the data and create a DataFram
     df_takeoffs = fetch_takeoffs_norway()
+    if df_takeoffs is not None:
+        print(f"Fetched {len(df_takeoffs)} Norwegian takeoffs")
+
+    df_india = fetch_takeoffs(country_iso="IN")
+    if df_india is not None:
+        print(f"Fetched {len(df_india)} Indian takeoffs")

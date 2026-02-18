@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 from dash import Dash, Input, Output, State, callback_context, dcc, html, no_update
 
 from . import forecast_service
+from .config import settings
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -76,6 +77,32 @@ def _empty_airgram() -> go.Figure:
     return fig
 
 
+_DATA_SOURCES: dict[str, tuple[str, str]] = {
+    "meps": ("MET Norway / MEPS", "https://www.met.no/"),
+    "icon-eu": ("DWD / ICON-EU", "https://www.dwd.de/"),
+    "icon-global": ("DWD / ICON Global", "https://www.dwd.de/"),
+}
+
+
+def _data_attribution_children(model_source: str) -> list:
+    """Build the data-attribution footer children for the given model source."""
+    source_label, source_url = _DATA_SOURCES.get(
+        model_source, ("MET Norway / MEPS", "https://www.met.no/")
+    )
+    return [
+        html.Span("Data: "),
+        html.A(source_label, href=source_url, target="_blank"),
+        html.Span(" | Weather symbols: "),
+        html.A("Yr", href="https://www.yr.no/", target="_blank"),
+        html.Span(" | Map: "),
+        html.A(
+            "OpenStreetMap",
+            href="https://www.openstreetmap.org/copyright",
+            target="_blank",
+        ),
+    ]
+
+
 def _compute_layout_defaults() -> dict[str, object]:
     """Compute initial layout values from the forecast metadata.
 
@@ -83,16 +110,34 @@ def _compute_layout_defaults() -> dict[str, object]:
     Called once per page load (via the function-based layout) so the app can
     start listening immediately without waiting for the database.
     """
-    meta = forecast_service.load_metadata()
+    # Determine available model sources and pick default
+    try:
+        available_models = forecast_service.get_available_model_sources()
+    except Exception:
+        available_models = ["meps"]
+    default_model = available_models[0] if available_models else "meps"
+
+    meta = forecast_service.load_metadata(model_source=default_model)
     available_times = meta.available_times
     if not available_times:
         raise RuntimeError("No forecast data available in detailed_forecasts")
 
-    location_options = forecast_service.get_takeoff_options()
+    location_options = forecast_service.get_takeoff_options(model_source=default_model)
     if not location_options:
         raise RuntimeError("No takeoff locations available")
     names = [option["value"] for option in location_options]
-    default_time = forecast_service.get_default_selected_time()
+    default_time = forecast_service.get_default_selected_time(
+        model_source=default_model
+    )
+
+    model_labels = {
+        "meps": "MEPS (Nordic 2.5km)",
+        "icon-eu": "ICON-EU (Europe 7km)",
+        "icon-global": "ICON Global (13km)",
+    }
+    model_source_options = [
+        {"label": model_labels.get(m, m), "value": m} for m in available_models
+    ]
 
     days_map = _group_times_by_day(available_times)
     day_keys = list(days_map.keys())
@@ -118,6 +163,8 @@ def _compute_layout_defaults() -> dict[str, object]:
         "day_radio_options": day_radio_options,
         "days_map_serialized": days_map_serialized,
         "day_keys": day_keys,
+        "default_model": default_model,
+        "model_source_options": model_source_options,
     }
 
 
@@ -144,6 +191,8 @@ def create_dash_app() -> Dash:
         day_radio_options = defaults["day_radio_options"]
         days_map_serialized = defaults["days_map_serialized"]
         day_keys = defaults["day_keys"]
+        default_model = defaults["default_model"]
+        model_source_options = defaults["model_source_options"]
 
         return html.Div(
             [
@@ -155,6 +204,7 @@ def create_dash_app() -> Dash:
                 dcc.Store(id="modal-open-store", data=False),
                 dcc.Store(id="debug-mode-store", data=False),
                 dcc.Store(id="forecast-ts-store", data=None),
+                dcc.Store(id="model-source-store", data=default_model),
                 # Hidden keyboard listener
                 html.Div(
                     id="keyboard-listener",
@@ -185,6 +235,20 @@ def create_dash_app() -> Dash:
                                     clearable=False,
                                 ),
                             ],
+                        ),
+                        # Model source selector (hidden when only one model available)
+                        dcc.Dropdown(
+                            id="model-source-dropdown",
+                            options=model_source_options,
+                            value=default_model,
+                            clearable=False,
+                            searchable=False,
+                            style={
+                                "maxWidth": "240px",
+                                "display": "block"
+                                if len(model_source_options) > 1
+                                else "none",
+                            },
                         ),
                         # Day selector (also mirrored inside the modal)
                         dcc.RadioItems(
@@ -382,26 +446,8 @@ def create_dash_app() -> Dash:
                             ],
                         ),
                         html.Div(
-                            [
-                                html.Span("Data: "),
-                                html.A(
-                                    "MET Norway / MEPS",
-                                    href="https://www.met.no/",
-                                    target="_blank",
-                                ),
-                                html.Span(" | Weather symbols: "),
-                                html.A(
-                                    "Yr",
-                                    href="https://www.yr.no/",
-                                    target="_blank",
-                                ),
-                                html.Span(" | Map: "),
-                                html.A(
-                                    "OpenStreetMap",
-                                    href="https://www.openstreetmap.org/copyright",
-                                    target="_blank",
-                                ),
-                            ],
+                            id="data-attribution",
+                            children=_data_attribution_children(default_model),
                             style={"marginTop": "4px"},
                         ),
                     ],
@@ -423,6 +469,71 @@ def create_dash_app() -> Dash:
     # ===================================================================
     # Callbacks
     # ===================================================================
+
+    # -------------------------------------------------------------------
+    # Model source changed -> reload days, times, locations
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("model-source-store", "data"),
+        Output("days-map-store", "data", allow_duplicate=True),
+        Output("day-keys-store", "data", allow_duplicate=True),
+        Output("day-radio", "options", allow_duplicate=True),
+        Output("modal-day-radio", "options", allow_duplicate=True),
+        Output("day-radio", "value", allow_duplicate=True),
+        Output("selected-time-store", "data", allow_duplicate=True),
+        Output("location-dropdown", "options"),
+        Output("location-dropdown", "value", allow_duplicate=True),
+        Input("model-source-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def on_model_source_changed(model_source):
+        if not model_source:
+            return (no_update,) * 9
+
+        # Reload metadata for the new model
+        try:
+            meta = forecast_service.load_metadata(model_source=model_source)
+        except Exception:
+            return (no_update,) * 9
+
+        available_times = meta.available_times
+        if not available_times:
+            return (no_update,) * 9
+
+        location_options = forecast_service.get_takeoff_options(
+            model_source=model_source
+        )
+
+        days_map = _group_times_by_day(available_times)
+        day_keys = list(days_map.keys())
+        days_map_ser = {dk: [_to_iso(t) for t in ts] for dk, ts in days_map.items()}
+        day_radio_opts = [{"label": _day_label(dk), "value": dk} for dk in day_keys]
+
+        # Pick default day/time
+        default_time = forecast_service.get_default_selected_time(
+            model_source=model_source
+        )
+        default_day = _to_local(default_time).date().isoformat()
+        if default_day not in day_keys:
+            default_day = day_keys[0]
+
+        target_hour = 14
+        day_times = days_map[default_day]
+        default_time_iso = _to_iso(
+            min(day_times, key=lambda t: abs(_to_local(t).hour - target_hour))
+        )
+
+        return (
+            model_source,
+            days_map_ser,
+            day_keys,
+            day_radio_opts,
+            day_radio_opts,
+            default_day,
+            default_time_iso,
+            location_options,
+            None,  # Clear selected location when switching models
+        )
 
     # -------------------------------------------------------------------
     # Sync: main day-radio -> modal day-radio
@@ -515,7 +626,7 @@ def create_dash_app() -> Dash:
         return current_time_iso
 
     # -------------------------------------------------------------------
-    # URL query params on initial load: ?location=X and ?debug=1
+    # URL query params on initial load: ?location=X, ?debug=1, ?model=X
     # -------------------------------------------------------------------
     @app.callback(
         Output("location-dropdown", "value", allow_duplicate=True),
@@ -523,31 +634,56 @@ def create_dash_app() -> Dash:
         Output("forecast-gen-wrapper", "style"),
         Output("forecast-gen-dropdown", "options"),
         Output("forecast-gen-dropdown", "value"),
+        Output("model-source-dropdown", "value"),
         Input("url", "search"),
         State("location-dropdown", "value"),
         State("forecast-gen-dropdown", "value"),
+        State("model-source-store", "data"),
         prevent_initial_call=True,
     )
     def init_from_query(
-        search: str, current_value: str | None, current_gen_value: str | None
+        search: str,
+        current_value: str | None,
+        current_gen_value: str | None,
+        current_model: str | None,
     ):
         location_out = no_update
         debug_mode = no_update
         gen_style = no_update
         gen_options = no_update
         gen_value = no_update
+        model_out = no_update
 
         if search:
             params = parse_qs(search.lstrip("?"))
+
+            # ?model=icon-eu — switch model source
+            model_param = params.get("model", [None])[0]
+            if model_param:
+                available = forecast_service.get_available_model_sources()
+                if model_param in available:
+                    model_out = model_param
+
+            # Use requested model (or current) for name validation
+            active_model = (
+                model_param
+                if model_param and model_out is not no_update
+                else current_model
+            )
+
             location = params.get("location", [None])[0]
-            if location and location in forecast_service.get_takeoff_names():
+            if location and location in forecast_service.get_takeoff_names(
+                model_source=active_model
+            ):
                 location_out = location
 
             if params.get("debug", [None])[0] == "1":
                 debug_mode = True
                 gen_style = {"display": "block"}
                 local_tz = ZoneInfo("Europe/Oslo")
-                timestamps = forecast_service.get_available_forecast_timestamps()
+                timestamps = forecast_service.get_available_forecast_timestamps(
+                    model_source=active_model
+                )
                 gen_options = [
                     {
                         "label": _ensure_tz_utc(ts)
@@ -561,7 +697,7 @@ def create_dash_app() -> Dash:
                 if current_gen_value is None and gen_options:
                     gen_value = gen_options[0]["value"]
 
-        return location_out, debug_mode, gen_style, gen_options, gen_value
+        return location_out, debug_mode, gen_style, gen_options, gen_value, model_out
 
     # -------------------------------------------------------------------
     # Forecast generation changed -> recompute days/times
@@ -576,14 +712,16 @@ def create_dash_app() -> Dash:
         Output("selected-time-store", "data", allow_duplicate=True),
         Input("forecast-gen-dropdown", "value"),
         State("debug-mode-store", "data"),
+        State("model-source-store", "data"),
         prevent_initial_call=True,
     )
-    def on_forecast_gen_changed(gen_ts_iso, debug_mode):
+    def on_forecast_gen_changed(gen_ts_iso, debug_mode, model_source):
         if not debug_mode or not gen_ts_iso:
             return (no_update,) * 7
 
+        ms = model_source or settings.default_model_source
         forecast_ts = _from_iso(gen_ts_iso)
-        meta = forecast_service.load_metadata(forecast_ts=forecast_ts)
+        meta = forecast_service.load_metadata(forecast_ts=forecast_ts, model_source=ms)
         available_times = meta.available_times
 
         days_map = _group_times_by_day(available_times)
@@ -613,19 +751,33 @@ def create_dash_app() -> Dash:
         )
 
     # -------------------------------------------------------------------
-    # Location -> URL query param
+    # Location / model -> URL query params
     # -------------------------------------------------------------------
     @app.callback(
         Output("url", "search"),
         Input("location-dropdown", "value"),
+        Input("model-source-store", "data"),
         State("url", "search"),
         prevent_initial_call=True,
     )
-    def query_from_location(selected_name: str | None, current_search: str):
-        if not selected_name:
-            return no_update
+    def query_from_state(
+        selected_name: str | None,
+        model_source: str | None,
+        current_search: str,
+    ):
         params = parse_qs((current_search or "").lstrip("?"))
-        params["location"] = [selected_name]
+
+        if selected_name:
+            params["location"] = [selected_name]
+
+        # Include model in URL if non-default
+        if model_source and model_source != settings.default_model_source:
+            params["model"] = [model_source]
+        else:
+            params.pop("model", None)
+
+        if not params:
+            return no_update
         return "?" + urlencode(params, doseq=True)
 
     # -------------------------------------------------------------------
@@ -643,6 +795,7 @@ def create_dash_app() -> Dash:
         Input("altitude-slider", "data"),
         Input("forecast-ts-store", "data"),
         Input("wind-altitude-dropdown", "value"),
+        Input("model-source-store", "data"),
         State("map-graph", "relayoutData"),
     )
     def update_figures(
@@ -653,12 +806,16 @@ def create_dash_app() -> Dash:
         altitude_max: int,
         forecast_ts_iso: str | None,
         wind_alt_value: str | None,
+        model_source: str | None,
         map_relayout: dict | None = None,
     ):
+        ms = model_source or settings.default_model_source
         forecast_ts = _from_iso(forecast_ts_iso) if forecast_ts_iso else None
 
         if not selected_time_iso:
-            selected_time_iso = _to_iso(forecast_service.get_default_selected_time())
+            selected_time_iso = _to_iso(
+                forecast_service.get_default_selected_time(model_source=ms)
+            )
         selected_time_utc = _from_iso(selected_time_iso)
         selected_time_local = _to_local(selected_time_utc)
 
@@ -684,6 +841,7 @@ def create_dash_app() -> Dash:
             zoom=effective_zoom,
             forecast_ts=forecast_ts,
             wind_altitude=wind_altitude,
+            model_source=ms,
         )
 
         # If no location selected, return empty airgram
@@ -693,10 +851,10 @@ def create_dash_app() -> Dash:
         # Build airgram for selected location
         day = selected_time_local.date()
         forecast_hours = forecast_service.get_forecast_hours_for_day(
-            selected_name, day, forecast_ts=forecast_ts
+            selected_name, day, forecast_ts=forecast_ts, model_source=ms
         )
         yr_entries = forecast_service.get_yr_weather_for_day(
-            selected_name, day, restrict_to_hours=forecast_hours
+            selected_name, day, restrict_to_hours=forecast_hours, model_source=ms
         )
 
         airgram_fig = forecast_service.build_airgram_figure(
@@ -706,12 +864,15 @@ def create_dash_app() -> Dash:
             yr_entries=yr_entries,
             selected_hour=selected_time_local.hour,
             forecast_ts=forecast_ts,
+            model_source=ms,
         )
 
         summary = forecast_service.get_summary(
-            selected_name, selected_time_utc, forecast_ts=forecast_ts
+            selected_name, selected_time_utc, forecast_ts=forecast_ts, model_source=ms
         )
-        used_ts = forecast_ts or forecast_service.get_latest_forecast_timestamp()
+        used_ts = forecast_ts or forecast_service.get_latest_forecast_timestamp(
+            model_source=ms
+        )
         age_hours = (dt.datetime.now(dt.timezone.utc) - used_ts).total_seconds() / 3600
         merged = (
             f"{summary} | Forecast updated "
@@ -895,5 +1056,16 @@ def create_dash_app() -> Dash:
         Input("day-radio", "value"),
         Input("day-keys-store", "data"),
     )
+
+    # -------------------------------------------------------------------
+    # Update footer attribution when model source changes
+    # -------------------------------------------------------------------
+    @app.callback(
+        Output("data-attribution", "children"),
+        Input("model-source-store", "data"),
+    )
+    def update_attribution(model_source):
+        ms = model_source or settings.default_model_source
+        return _data_attribution_children(ms)
 
     return app

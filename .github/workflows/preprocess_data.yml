@@ -7,8 +7,8 @@ on:
     branches:
       - main
 jobs:
-  uv-example:
-    name: python
+  meps-pipeline:
+    name: MEPS forecast pipeline
     runs-on: ubuntu-latest
 
     steps:
@@ -22,8 +22,34 @@ jobs:
       - name: Install the project
         run: uv sync --all-extras --dev
 
-      - name: Run data fetch
+      - name: Run MEPS data fetch
         run: uv run python preprocess_forecast.py
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          TRIGGER_SOURCE: ${{ github.event_name }}
+
+  icon-eu-pipeline:
+    name: ICON-EU forecast pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libeccodes-dev
+
+      - name: Install the project
+        run: uv sync --all-extras --dev
+
+      - name: Run ICON-EU Norway pipeline
+        run: uv run python preprocess_icon.py --model icon-eu --region norway
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           TRIGGER_SOURCE: ${{ github.event_name }}

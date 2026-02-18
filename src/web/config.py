@@ -39,5 +39,9 @@ class Settings(BaseSettings):
     yr_ttl_seconds: int = 1800
     """How long (seconds) to cache Yr locationforecast responses."""
 
+    # Multi-model support
+    default_model_source: str = "meps"
+    """Default weather model source used when none is specified."""
+
 
 settings = Settings()  # type: ignore[call-arg]
