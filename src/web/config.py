@@ -36,8 +36,10 @@ class Settings(BaseSettings):
     """How long (seconds) to cache forecast queries before re-fetching."""
 
     # Yr / MET Norway cache TTL
-    yr_ttl_seconds: int = 1800
-    """How long (seconds) to cache Yr locationforecast responses."""
+    yr_ttl_seconds: int = 3600
+    """How long (seconds) to cache Yr locationforecast responses.
+
+    Yr data updates hourly, so 3600s avoids redundant fetches."""
 
     # Multi-model support
     default_model_source: str = "meps"

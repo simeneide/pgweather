@@ -2,11 +2,15 @@
 # Write table
 from __future__ import annotations
 
+import logging
+import threading
 from typing import Optional
 
 import polars as pl
 
 from src.web.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _get_database_uri() -> str:
@@ -14,13 +18,45 @@ def _get_database_uri() -> str:
 
 
 class Database:
-    """Simple wrapper around polars to read and write to Postgres."""
+    """Simple wrapper around polars to read and write to Postgres.
+
+    Uses thread-local ADBC connections so each worker thread reuses a
+    persistent connection instead of opening a new TCP+TLS handshake
+    on every query (~50-200 ms saved per query to Supabase).
+    """
 
     def __init__(self, uri: Optional[str] = None):
         self.uri = uri or _get_database_uri()
+        self._local = threading.local()
+
+    def _get_connection(self):
+        """Return a thread-local ADBC connection, creating one if needed."""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            import adbc_driver_postgresql.dbapi as pg_dbapi
+
+            conn = pg_dbapi.connect(self.uri)
+            self._local.conn = conn
+        return conn
+
+    def _reset_connection(self):
+        """Close and discard the thread-local connection (e.g. after error)."""
+        old = getattr(self._local, "conn", None)
+        self._local.conn = None
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
 
     def read(self, query: str) -> pl.DataFrame:
-        return pl.read_database_uri(query=query, uri=self.uri, engine="adbc")
+        try:
+            return pl.read_database(query=query, connection=self._get_connection())
+        except Exception:
+            # Connection may be stale (server closed it) — reconnect once.
+            logger.debug("DB read failed, reconnecting", exc_info=True)
+            self._reset_connection()
+            return pl.read_database(query=query, connection=self._get_connection())
 
     def write(
         self,

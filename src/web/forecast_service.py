@@ -1251,6 +1251,82 @@ def _load_geojson() -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _apply_map_selection(fig: go.Figure, selected_name: Optional[str]) -> go.Figure:
+    """Apply selection highlighting to a base map figure (lightweight post-processing).
+
+    Modifies marker sizes, map center, and adds a name annotation for the
+    selected takeoff — without rebuilding any data or traces.
+    """
+    if not selected_name:
+        return fig
+
+    # Find the main marker trace (identified by having customdata with names).
+    # Use bracket access (``trace["key"]``) which works on both fresh Plotly
+    # trace objects and dict-reconstructed figures.
+    main_idx: int | None = None
+    for i, trace in enumerate(fig.data):
+        try:
+            cd = trace["customdata"]
+        except (KeyError, TypeError):
+            continue
+        if cd is not None and hasattr(cd, "__len__") and len(cd) > 0:
+            main_idx = i
+            break
+
+    if main_idx is None:
+        return fig
+
+    main_trace = fig.data[main_idx]
+    names = list(main_trace["customdata"])
+    if selected_name not in names:
+        return fig
+
+    pt_idx = names.index(selected_name)
+
+    # Resize selected marker (11 → 18) and its outline ring (16 → 23).
+    # We must write full lists back so Plotly doesn't keep the binary blob.
+    ms = list(main_trace["marker"]["size"])
+    ms[pt_idx] = 18
+    fig.data[main_idx]["marker"]["size"] = ms
+
+    if main_idx > 0:
+        outline_trace = fig.data[main_idx - 1]
+        try:
+            o_sz = outline_trace["marker"]["size"]
+        except (KeyError, TypeError):
+            o_sz = None
+        if o_sz is not None:
+            o_sizes = list(o_sz)
+            o_sizes[pt_idx] = 23
+            fig.data[main_idx - 1]["marker"]["size"] = o_sizes
+
+    # Re-center map on selected point
+    lat_arr = list(main_trace["lat"])
+    lon_arr = list(main_trace["lon"])
+    lat = float(lat_arr[pt_idx])
+    lon = float(lon_arr[pt_idx])
+    fig.update_layout(map=dict(center=dict(lat=lat, lon=lon)))
+
+    # Add name annotation (top-left)
+    fig.add_annotation(
+        text=f"<b>{selected_name}</b>",
+        x=0,
+        y=1,
+        xref="paper",
+        yref="paper",
+        xanchor="left",
+        yanchor="top",
+        showarrow=False,
+        font=dict(size=13, color="#1e293b"),
+        bgcolor="rgba(255,255,255,0.85)",
+        bordercolor="rgba(200,200,200,0.5)",
+        borderwidth=1,
+        borderpad=5,
+    )
+
+    return fig
+
+
 def build_map_figure(
     selected_time: dt.datetime,
     selected_name: Optional[str],
@@ -1262,15 +1338,17 @@ def build_map_figure(
     ms = model_source or settings.default_model_source
     resolved_ts = _resolve_forecast_ts(forecast_ts, model_source=ms)
     wind_alt_key = "off" if wind_altitude is None else str(int(wind_altitude))
+    # Cache key intentionally excludes selected_name — selection is applied
+    # as cheap post-processing so switching takeoffs doesn't trigger a rebuild.
     cache_key = (
         f"{ms}|{resolved_ts.isoformat()}|{selected_time.isoformat()}|"
-        f"{selected_name or ''}|{zoom}|{wind_alt_key}"
+        f"{zoom}|{wind_alt_key}"
     )
 
     _prune_expired_cache_entries(_MAP_FIG_CACHE, settings.data_ttl_seconds)
     cached_fig = _MAP_FIG_CACHE.get(cache_key)
     if cached_fig is not None:
-        return go.Figure(cached_fig.data)
+        return _apply_map_selection(go.Figure(cached_fig.data), selected_name)
 
     map_df = load_map_data(
         selected_time,
@@ -1323,27 +1401,26 @@ def build_map_figure(
     center = {"lat": 61.2, "lon": 8.0}
     subset_points = map_df.filter(pl.col("point_type") != "area")
     if len(subset_points) > 0:
-        lat = subset_points.get_column("latitude").to_numpy()
-        lon = subset_points.get_column("longitude").to_numpy()
+        # Convert to plain Python lists so Plotly serialises them as JSON
+        # arrays (not binary blobs) — needed for _apply_map_selection to
+        # modify sizes/read lat-lon after cache round-trip.
+        lat = subset_points.get_column("latitude").to_list()
+        lon = subset_points.get_column("longitude").to_list()
         peak_velocity = subset_points.get_column("peak_thermal_velocity").to_numpy()
         thermal_top = subset_points.get_column("thermal_top").to_numpy().round()
-        names = subset_points.get_column("name").to_numpy()
-        if selected_name is not None:
-            selected = names == selected_name
-        else:
-            selected = np.zeros_like(names, dtype=bool)
-        marker_size = np.where(selected, 18, 11)
-        if selected.any():
-            selected_idx = int(np.argmax(selected))
-            center = {
-                "lat": float(lat[selected_idx]),
-                "lon": float(lon[selected_idx]),
-            }
-        else:
-            center = {"lat": float(lat.mean()), "lon": float(lon.mean())}
+        names = subset_points.get_column("name").to_list()
+        # Base figure uses uniform marker sizes (plain lists to survive
+        # Plotly dict serialization) — selection highlight is applied
+        # cheaply in _apply_map_selection() after cache lookup.
+        n_points = len(names)
+        marker_size = [11] * n_points
+        center = {
+            "lat": sum(lat) / n_points,
+            "lon": sum(lon) / n_points,
+        }
 
         # Outline layer — dark ring behind each marker for contrast
-        outline_size = marker_size + 5
+        outline_size = [16] * n_points
         fig.add_trace(
             go.Scattermap(
                 lat=lat,
@@ -1532,23 +1609,7 @@ def build_map_figure(
         borderpad=5,
     )
 
-    # Selected takeoff name label — top-left corner
-    if selected_name:
-        fig.add_annotation(
-            text=f"<b>{selected_name}</b>",
-            x=0,
-            y=1,
-            xref="paper",
-            yref="paper",
-            xanchor="left",
-            yanchor="top",
-            showarrow=False,
-            font=dict(size=13, color="#1e293b"),
-            bgcolor="rgba(255,255,255,0.85)",
-            bordercolor="rgba(200,200,200,0.5)",
-            borderwidth=1,
-            borderpad=5,
-        )
+    # Selected takeoff name label is added by _apply_map_selection()
 
     if len(fig.data) == 0:
         fig.add_annotation(
@@ -1564,7 +1625,7 @@ def build_map_figure(
         loaded_at=dt.datetime.now(dt.timezone.utc),
         data=fig.to_dict(),
     )
-    return fig
+    return _apply_map_selection(fig, selected_name)
 
 
 # ---------------------------------------------------------------------------

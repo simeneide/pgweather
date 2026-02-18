@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +26,25 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="pgpilot forecast", version="1.1.0")
+
+
+@app.on_event("startup")
+def _prefetch_on_startup() -> None:
+    """Pre-fetch slow external data in background so no user request blocks.
+
+    Wind sector data from ParaglidingEarth can take up to 15 s — fetching it
+    eagerly means the cache is warm before the first map request arrives.
+    """
+
+    def _prefetch() -> None:
+        try:
+            forecast_service.get_wind_sectors()
+            logger.info("Wind sectors pre-fetched successfully")
+        except Exception:
+            logger.exception("Failed to pre-fetch wind sectors")
+
+    threading.Thread(target=_prefetch, daemon=True).start()
+
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _FRONTEND_DIST = _PROJECT_ROOT / "frontend" / "dist"
