@@ -13,6 +13,7 @@ Usage::
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import os
 
@@ -82,7 +83,10 @@ def run_icon_eu_pipeline(
         f" WHERE model_source = '{model_source}'"
     )
     max_ts = last_ts[0, 0]
-    if max_ts is not None and max_ts >= init_time.replace(tzinfo=None):
+    # Ensure both datetimes are tz-aware for comparison (DB may return naive)
+    if max_ts is not None and hasattr(max_ts, "tzinfo") and max_ts.tzinfo is None:
+        max_ts = max_ts.replace(tzinfo=dt.timezone.utc)
+    if max_ts is not None and max_ts >= init_time:
         if os.getenv("TRIGGER_SOURCE") != "push":
             logger.info(
                 "ICON-EU forecast %s already in DB (latest: %s). Skipping.",
