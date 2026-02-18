@@ -106,6 +106,7 @@ body {
 }
 
 .controls select,
+.controls input,
 .controls button,
 .modal-day-row .pill,
 .modal-close-btn {
@@ -129,7 +130,13 @@ body {
   padding-right: 28px;
 }
 
+.controls input {
+  width: 100%;
+  padding: 0 10px;
+}
+
 .controls select:focus,
+.controls input:focus,
 .controls button:focus-visible,
 .modal-day-row .pill:focus-visible,
 .modal-close-btn:focus-visible {
@@ -170,6 +177,56 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.takeoff-search {
+  position: relative;
+}
+
+.takeoff-results {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.98);
+  box-shadow: 0 10px 24px rgba(2, 6, 23, 0.55);
+}
+
+.takeoff-option,
+.takeoff-empty {
+  width: 100%;
+  min-height: 34px;
+  border: 0;
+  border-bottom: 1px solid rgba(71, 85, 105, 0.4);
+  background: transparent;
+  color: #dbeafe;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.takeoff-option {
+  cursor: pointer;
+}
+
+.takeoff-option:hover,
+.takeoff-option.active {
+  background: rgba(14, 165, 233, 0.18);
+  color: #fff;
+}
+
+.takeoff-results > :last-child {
+  border-bottom: 0;
+}
+
+.takeoff-empty {
+  color: var(--muted);
 }
 
 .hour-row span {
@@ -390,6 +447,7 @@ body {
   }
 
   .controls select,
+  .controls input,
   .controls button,
   .modal-day-row .pill,
   .modal-close-btn {

@@ -185,8 +185,8 @@ test("opens modal with airgram on takeoff select, closes on Escape", async ({ pa
   await expect(page.locator(".map")).toBeVisible();
   await expect.poll(() => calls.map.length).toBe(1);
 
-  const selects = page.getByRole("combobox");
-  await selects.nth(1).selectOption("Voss");
+  await page.getByLabel("Takeoff search").fill("vos");
+  await page.locator(".takeoff-option", { hasText: "Voss" }).click();
 
   // Modal should open with airgram
   await expect(page.locator(".modal-wrapper")).toBeVisible();
@@ -207,7 +207,7 @@ test("opens modal with airgram on takeoff select, closes on Escape", async ({ pa
 
   // Now interact with controls behind the modal
   await page.getByRole("button", { name: "▶" }).click();
-  await selects.nth(2).selectOption("1000");
+  await page.getByLabel("Wind altitude").selectOption("1000");
 
   await expect
     .poll(() => {

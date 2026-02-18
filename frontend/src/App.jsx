@@ -53,6 +53,8 @@ function App() {
   } = useFrontendMeta();
 
   const [selectedName, setSelectedName] = useState("");
+  const [takeoffQuery, setTakeoffQuery] = useState("");
+  const [showTakeoffResults, setShowTakeoffResults] = useState(false);
   const [windAltitude, setWindAltitude] = useState("off");
   const [modalOpen, setModalOpen] = useState(false);
   const [mapColorMode, setMapColorMode] = useState("suitability");
@@ -84,6 +86,62 @@ function App() {
   );
   const locationOptions = meta?.location_options || [];
   const modelOptions = meta?.model_source_options || [];
+
+  const selectedLocationOption = useMemo(
+    () => locationOptions.find((o) => o.value === selectedName) || null,
+    [locationOptions, selectedName]
+  );
+
+  const filteredLocationOptions = useMemo(() => {
+    const q = takeoffQuery.trim().toLowerCase();
+    if (!q) return locationOptions.slice(0, 40);
+    return locationOptions
+      .filter(
+        (o) =>
+          o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q)
+      )
+      .slice(0, 40);
+  }, [locationOptions, takeoffQuery]);
+
+  useEffect(() => {
+    if (!selectedName) {
+      setTakeoffQuery("");
+      return;
+    }
+    if (selectedLocationOption) {
+      setTakeoffQuery(selectedLocationOption.label);
+    }
+  }, [selectedLocationOption, selectedName]);
+
+  const commitTakeoffSelection = useCallback(
+    (rawValue) => {
+      const value = rawValue.trim();
+      if (!value) {
+        setSelectedName("");
+        setModalOpen(false);
+        return;
+      }
+
+      const lower = value.toLowerCase();
+      const exactMatch = locationOptions.find(
+        (o) => o.value.toLowerCase() === lower || o.label.toLowerCase() === lower
+      );
+      const containsMatch =
+        exactMatch ||
+        locationOptions.find(
+          (o) =>
+            o.label.toLowerCase().includes(lower) ||
+            o.value.toLowerCase().includes(lower)
+        );
+
+      if (containsMatch) {
+        setSelectedName(containsMatch.value);
+        setTakeoffQuery(containsMatch.label);
+        setModalOpen(true);
+      }
+    },
+    [locationOptions]
+  );
 
   const handleModelChange = useCallback(async (newModel) => {
     if (newModel === modelSource) return;
@@ -122,7 +180,11 @@ function App() {
       {error ? <div className="error">{error}</div> : null}
 
       <div className="controls">
-        <select value={modelSource} onChange={(e) => handleModelChange(e.target.value)}>
+        <select
+          aria-label="Forecast model"
+          value={modelSource}
+          onChange={(e) => handleModelChange(e.target.value)}
+        >
           {modelOptions.map((o) => (
             <option key={o.value} value={o.value}>{o.label}</option>
           ))}
@@ -154,17 +216,64 @@ function App() {
           }}>&#9654;</button>
         </div>
 
-        <select value={selectedName} onChange={(e) => {
-          setSelectedName(e.target.value);
-          if (e.target.value) setModalOpen(true);
-        }}>
-          <option value="">Search takeoff...</option>
-          {locationOptions.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
+        <div className="takeoff-search">
+          <input
+            type="text"
+            aria-label="Takeoff search"
+            placeholder="Search takeoff..."
+            value={takeoffQuery}
+            onFocus={() => setShowTakeoffResults(true)}
+            onBlur={() => {
+              window.setTimeout(() => setShowTakeoffResults(false), 120);
+            }}
+            onChange={(e) => {
+              const next = e.target.value;
+              setTakeoffQuery(next);
+              setShowTakeoffResults(true);
+              if (!next.trim()) {
+                setSelectedName("");
+                setModalOpen(false);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitTakeoffSelection(takeoffQuery);
+                setShowTakeoffResults(false);
+              } else if (e.key === "Escape") {
+                setShowTakeoffResults(false);
+              }
+            }}
+          />
+          {showTakeoffResults ? (
+            <div className="takeoff-results">
+              {filteredLocationOptions.length ? (
+                filteredLocationOptions.map((o) => (
+                  <button
+                    type="button"
+                    key={o.value}
+                    className={selectedName === o.value ? "takeoff-option active" : "takeoff-option"}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      commitTakeoffSelection(o.value);
+                      setShowTakeoffResults(false);
+                    }}
+                  >
+                    {o.label}
+                  </button>
+                ))
+              ) : (
+                <div className="takeoff-empty">No matching takeoffs</div>
+              )}
+            </div>
+          ) : null}
+        </div>
 
-        <select value={windAltitude} onChange={(e) => setWindAltitude(e.target.value)}>
+        <select
+          aria-label="Wind altitude"
+          value={windAltitude}
+          onChange={(e) => setWindAltitude(e.target.value)}
+        >
           <option value="off">Wind off</option>
           <option value="0">Surface wind</option>
           <option value="500">Wind 500m</option>
