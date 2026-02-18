@@ -32,8 +32,30 @@ const metaPayload = {
   ]
 };
 
-function mockFrontendApis(page, mapRequests) {
+function buildPoint(name, latitude, longitude, selected = false) {
+  return {
+    name,
+    latitude,
+    longitude,
+    thermal_top: 1700,
+    peak_thermal_velocity: 2.6,
+    selected,
+    suitability_color: "#4caf50",
+    suitability_label: "Suitable",
+    suitability_tooltip: "Faces: W | Wind: W 4m/s → Suitable",
+    wind_speed: 4,
+    wind_direction_compass: "W"
+  };
+}
+
+function mockFrontendApis(page, calls, options = {}) {
+  const points = options.points || [
+    buildPoint("Voss", 60.63, 6.42),
+    buildPoint("Hemsedal", 60.87, 8.56)
+  ];
+
   page.route("**/api/frontend/meta", async (route) => {
+    calls.meta.push(route.request().postDataJSON());
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -43,8 +65,12 @@ function mockFrontendApis(page, mapRequests) {
 
   page.route("**/api/frontend/map", async (route) => {
     const requestBody = route.request().postDataJSON();
-    mapRequests.push(requestBody);
+    calls.map.push(requestBody);
     const selectedName = requestBody.selected_name;
+    const payloadPoints = points.map((p) => ({
+      ...p,
+      selected: selectedName === p.name
+    }));
 
     await route.fulfill({
       status: 200,
@@ -58,24 +84,7 @@ function mockFrontendApis(page, mapRequests) {
           lon: selectedName ? 6.42 : 8.0,
           zoom: requestBody.zoom ?? 6
         },
-        points: [
-          {
-            name: "Voss",
-            latitude: 60.63,
-            longitude: 6.42,
-            thermal_top: 1700,
-            peak_thermal_velocity: 2.6,
-            selected: selectedName === "Voss"
-          },
-          {
-            name: "Hemsedal",
-            latitude: 60.87,
-            longitude: 8.56,
-            thermal_top: 1500,
-            peak_thermal_velocity: 1.8,
-            selected: selectedName === "Hemsedal"
-          }
-        ],
+        points: payloadPoints,
         area_features: [],
         wind_altitude: requestBody.wind_altitude,
         wind_vectors:
@@ -98,6 +107,7 @@ function mockFrontendApis(page, mapRequests) {
 
   page.route("**/api/frontend/airgram", async (route) => {
     const body = route.request().postDataJSON();
+    calls.airgram.push(body);
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -137,6 +147,7 @@ function mockFrontendApis(page, mapRequests) {
 
   page.route("**/api/frontend/summary", async (route) => {
     const body = route.request().postDataJSON();
+    calls.summary.push(body);
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -150,8 +161,8 @@ function mockFrontendApis(page, mapRequests) {
 }
 
 test("loads controls and map shell", async ({ page }) => {
-  const mapRequests = [];
-  await mockFrontendApis(page, mapRequests);
+  const calls = { meta: [], map: [], airgram: [], summary: [] };
+  await mockFrontendApis(page, calls);
 
   await page.goto("/");
 
@@ -159,15 +170,20 @@ test("loads controls and map shell", async ({ page }) => {
   await expect(page.locator(".controls")).toBeVisible();
   await expect(page.locator(".map")).toBeVisible();
   await expect(page.getByText("Wed 18")).toBeVisible();
-  await expect.poll(() => mapRequests.length).toBeGreaterThan(0);
+  await expect.poll(() => calls.map.length).toBeGreaterThan(0);
+
+  // Startup should not perform duplicate bootstrap fetches
+  await expect.poll(() => calls.meta.length).toBe(1);
+  await expect.poll(() => calls.map.length).toBe(1);
 });
 
 test("opens modal with airgram on takeoff select, closes on Escape", async ({ page }) => {
-  const mapRequests = [];
-  await mockFrontendApis(page, mapRequests);
+  const calls = { meta: [], map: [], airgram: [], summary: [] };
+  await mockFrontendApis(page, calls);
 
   await page.goto("/");
   await expect(page.locator(".map")).toBeVisible();
+  await expect.poll(() => calls.map.length).toBe(1);
 
   const selects = page.getByRole("combobox");
   await selects.nth(1).selectOption("Voss");
@@ -181,6 +197,11 @@ test("opens modal with airgram on takeoff select, closes on Escape", async ({ pa
   await page.keyboard.press("Escape");
   await expect(page.locator(".modal-wrapper")).not.toBeVisible();
 
+  // Selecting takeoff should fetch airgram/summary, but not refetch map
+  await expect.poll(() => calls.airgram.length).toBe(1);
+  await expect.poll(() => calls.summary.length).toBe(1);
+  await expect.poll(() => calls.map.length).toBe(1);
+
   // Summary below map should be clickable to re-open
   await expect(page.locator(".summary")).toContainText("Selected: Voss");
 
@@ -190,7 +211,7 @@ test("opens modal with airgram on takeoff select, closes on Escape", async ({ pa
 
   await expect
     .poll(() => {
-      const lastRequest = mapRequests.at(-1);
+      const lastRequest = calls.map.at(-1);
       return lastRequest?.wind_altitude;
     })
     .toBe(1000);
