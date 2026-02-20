@@ -7,10 +7,10 @@ on:
     branches:
       - main
 
-# Cancel in-progress runs when a new run starts (same workflow)
+# Queue runs instead of cancelling — pipelines are idempotent (skip if data exists)
 concurrency:
   group: preprocess-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   meps-pipeline:
