@@ -196,44 +196,39 @@ def _download_grib_files(
 def _grib_bytes_to_dataset(grib_bytes_list: list[bytes]) -> xr.Dataset:
     """Convert a list of GRIB2 byte blobs into a single xarray Dataset.
 
-    Writes to a temporary file because cfgrib requires a file path.
-    Each GRIB file may contain data for a single level/timestep; cfgrib
-    will assign scalar coordinates for those dimensions.  We expand them
-    to real dimensions before merging so that xr.merge stacks them into
-    a multi-dimensional dataset.
+    Concatenates all GRIB messages into a single file then opens once with
+    cfgrib — much faster than opening thousands of tiny files individually.
     """
-    datasets = []
+    if not grib_bytes_list:
+        raise RuntimeError("No GRIB data to parse")
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        for i, data in enumerate(grib_bytes_list):
-            fpath = Path(tmpdir) / f"data_{i:04d}.grib2"
-            fpath.write_bytes(data)
-            try:
-                ds_list = cfgrib.open_datasets(str(fpath))
-                for ds in ds_list:
-                    # Promote scalar coordinates to dimensions so merging
-                    # stacks along them instead of overwriting.
-                    expand_dims: list[str] = []
-                    for coord_name in [
-                        "generalVerticalLayer",
-                        "generalVertical",
-                        "level",
-                        "hybrid",
-                        "step",
-                    ]:
-                        if coord_name in ds.coords and coord_name not in ds.dims:
-                            expand_dims.append(coord_name)
-                    if expand_dims:
-                        ds = ds.expand_dims(expand_dims)
-                    datasets.append(ds)
-            except Exception:
-                logger.warning("Failed to parse GRIB file %d", i)
-                continue
+        # Concatenate all GRIB messages into one file
+        combined_path = Path(tmpdir) / "combined.grib2"
+        with combined_path.open("wb") as fh:
+            for data in grib_bytes_list:
+                fh.write(data)
 
-    if not datasets:
-        raise RuntimeError("No GRIB data could be parsed")
+        logger.info(
+            "Parsing combined GRIB file (%d messages, %.1f MB)...",
+            len(grib_bytes_list),
+            combined_path.stat().st_size / 1e6,
+        )
 
-    # Merge all datasets — cfgrib may split by level type
-    merged = xr.combine_by_coords(datasets, combine_attrs="override")
+        ds_list = cfgrib.open_datasets(str(combined_path))
+        if not ds_list:
+            raise RuntimeError("No GRIB data could be parsed")
+
+        # Force eager loading — cfgrib uses lazy file references that
+        # break once the temp directory is cleaned up.
+        loaded = [ds.load() for ds in ds_list]
+
+    # cfgrib may return multiple datasets (split by level type).
+    # Merge them together.
+    if len(loaded) == 1:
+        return loaded[0]
+
+    merged = xr.merge(loaded, compat="override")
     return merged
 
 
