@@ -3,14 +3,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "20 */3 * * *"
-  push:
-    branches:
-      - main
-
-# Queue runs instead of cancelling — pipelines are idempotent (skip if data exists)
-concurrency:
-  group: preprocess-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
   meps-pipeline:
