@@ -147,6 +147,35 @@ class Database:
         )
         return True
 
+    def latest_forecast_timestamp(
+        self,
+        model_source: str,
+        table_name: str = "detailed_forecasts",
+    ):
+        """Return max(forecast_timestamp) for *model_source*, or None.
+
+        Returns None if the table does not exist yet (first-ever run after a
+        DB reset) or if there are no rows for the given model_source. Callers
+        can treat None as "no prior forecast" so the pipeline proceeds and
+        the table gets created on the first write.
+        """
+        try:
+            df = self.read(
+                f"SELECT max(forecast_timestamp) AS max_ts FROM {table_name}"
+                f" WHERE model_source = '{model_source}'"
+            )
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "does not exist" in msg or "not_found" in msg:
+                logger.info(
+                    "%s missing; treating as empty so pipeline can (re)create it.",
+                    table_name,
+                )
+                self._reset_connection()
+                return None
+            raise
+        return df[0, 0]
+
     def execute_query(self, query: str, timeout_ms: int = 300_000) -> list | None:
         """Execute a raw SQL query with an explicit statement timeout.
 
