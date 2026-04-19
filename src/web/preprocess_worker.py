@@ -102,15 +102,21 @@ def _log_run(
 
 def _run_one(cmd: list[str], step: str) -> int:
     started = dt.datetime.now(dt.timezone.utc)
-    logger.info("Starting %s: %s", step, " ".join(cmd))
-    proc = subprocess.run(
-        cmd,
-        cwd=_REPO_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    # Echo output so it also appears on the container stdout (in case Verda
-    # surfaces logs somewhere we haven't found yet).
+    logger.info("Starting %s: %s (cwd=%s)", step, " ".join(cmd), _REPO_ROOT)
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+    except Exception as exc:
+        # Capture spawn-time failures (FileNotFoundError, PermissionError, ...)
+        # as a synthetic CompletedProcess so we still persist a log row.
+        logger.exception("subprocess.run raised before the child started")
+        proc = subprocess.CompletedProcess(
+            args=cmd, returncode=127, stdout="", stderr=f"spawn error: {exc!r}\n"
+        )
     if proc.stdout:
         sys.stdout.write(proc.stdout)
         sys.stdout.flush()
@@ -123,29 +129,56 @@ def _run_one(cmd: list[str], step: str) -> int:
 
 
 def _run_preprocess() -> None:
-    python = sys.executable
-    exit_code = 0
-    for cmd, step in (
-        ([python, "preprocess_forecast.py"], "meps"),
-        (
-            [
-                python,
-                "preprocess_icon.py",
-                "--model",
-                "icon-eu",
-                "--region",
-                "norway",
-                "--max-hours",
-                "30",
-            ],
-            "icon-eu",
+    # Always record that the BG task fired, even before any subprocess runs,
+    # so a failure in env discovery or subprocess spawn is still visible in
+    # preprocess_runs (hunting blind was painful).
+    startup_started = dt.datetime.now(dt.timezone.utc)
+    startup_info = [
+        f"python={sys.executable}",
+        f"cwd={_REPO_ROOT}",
+        f"cwd_listing={sorted(p.name for p in _REPO_ROOT.iterdir())[:60]}",
+    ]
+    _log_run(
+        startup_started,
+        "startup",
+        subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="\n".join(startup_info), stderr=""
         ),
-    ):
-        rc = _run_one(cmd, step)
-        if rc != 0:
-            exit_code = rc
-            logger.error("%s step failed (code=%d) — skipping the rest", step, rc)
-            break
+    )
+
+    exit_code = 0
+    try:
+        for cmd, step in (
+            ([sys.executable, "preprocess_forecast.py"], "meps"),
+            (
+                [
+                    sys.executable,
+                    "preprocess_icon.py",
+                    "--model",
+                    "icon-eu",
+                    "--region",
+                    "norway",
+                    "--max-hours",
+                    "30",
+                ],
+                "icon-eu",
+            ),
+        ):
+            rc = _run_one(cmd, step)
+            if rc != 0:
+                exit_code = rc
+                logger.error("%s step failed (code=%d) — skipping the rest", step, rc)
+                break
+    except Exception as exc:
+        logger.exception("Uncaught error in _run_preprocess")
+        _log_run(
+            dt.datetime.now(dt.timezone.utc),
+            "fatal",
+            subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr=f"{exc!r}"
+            ),
+        )
+        exit_code = 1
     logger.info("All done. Exiting with code %d.", exit_code)
     os._exit(exit_code)
 
