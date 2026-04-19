@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS {_RUNS_TABLE} (
 _INSERT_SQL = f"""
 INSERT INTO {_RUNS_TABLE}
 (started_at, ended_at, exit_code, step, stdout_tail, stderr_tail, image_tag)
-VALUES (%s, %s, %s, %s, %s, %s, %s)
+VALUES ($1::timestamptz, $2::timestamptz, $3, $4, $5, $6, $7)
 """
 _LAST_RUN_SQL = f"""
 SELECT started_at, ended_at, exit_code, step, stdout_tail, stderr_tail, image_tag
@@ -75,9 +75,14 @@ def _log_run(
     import adbc_driver_postgresql.dbapi as pg
 
     try:
+        # Run DDL in its own transaction so the table survives even if the
+        # subsequent INSERT fails (adbc rolls back the whole tx otherwise).
         with pg.connect(_db_url()) as conn:
             with conn.cursor() as cur:
                 cur.execute(_CREATE_TABLE_SQL)
+            conn.commit()
+        with pg.connect(_db_url()) as conn:
+            with conn.cursor() as cur:
                 cur.execute(
                     _INSERT_SQL,
                     (
