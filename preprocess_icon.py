@@ -78,11 +78,7 @@ def run_icon_eu_pipeline(
 
     # Check if forecast already exists in DB
     db = db_utils.Database()
-    last_ts = db.read(
-        "SELECT max(forecast_timestamp) AS max_ts FROM detailed_forecasts"
-        f" WHERE model_source = '{model_source}'"
-    )
-    max_ts = last_ts[0, 0]
+    max_ts = db.latest_forecast_timestamp(model_source)
     # Ensure both datetimes are tz-aware for comparison (DB may return naive)
     if max_ts is not None and hasattr(max_ts, "tzinfo") and max_ts.tzinfo is None:
         max_ts = max_ts.replace(tzinfo=dt.timezone.utc)

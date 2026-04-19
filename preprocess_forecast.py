@@ -77,11 +77,7 @@ if __name__ == "__main__":
 
     # Check in db if forecast already exists
     db = db_utils.Database()
-    last_executed_forecast_timestamp = db.read(
-        "select max(forecast_timestamp) as max_forecast_timestamp from detailed_forecasts"
-        f" where model_source = '{MODEL_SOURCE}'"
-    )
-    max_forecast_timestamp = last_executed_forecast_timestamp[0, 0]
+    max_forecast_timestamp = db.latest_forecast_timestamp(MODEL_SOURCE)
     no_new_forecast_exists = (max_forecast_timestamp is not None) and (
         max_forecast_timestamp >= forecast_timestamp_datetime
     )
@@ -90,7 +86,7 @@ if __name__ == "__main__":
         logger.info(
             "Forecast timestamp: %s, Last executed: %s, Trigger: %s",
             forecast_timestamp_datetime,
-            last_executed_forecast_timestamp[0, 0],
+            max_forecast_timestamp,
             os.getenv("TRIGGER_SOURCE"),
         )
         logger.info("Same or newer forecast already exists in db. Exiting.")
