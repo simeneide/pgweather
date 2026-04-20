@@ -43,6 +43,11 @@ def _prefetch_on_startup() -> None:
         except Exception:
             logger.exception("Failed to pre-fetch wind sectors")
 
+        try:
+            forecast_service.prewarm_yr_cache()
+        except Exception:
+            logger.exception("Failed to pre-warm Yr cache")
+
     threading.Thread(target=_prefetch, daemon=True).start()
 
 
