@@ -298,12 +298,50 @@ def subsample_lat_lon(
     )
 
 
+def _nearest_point_forecasts(
+    df: pl.DataFrame,
+    points_forecast: gpd.GeoDataFrame,
+    poi_gdf: gpd.GeoDataFrame,
+    crs,
+    point_type: str,
+    max_distance: float = 10000,
+) -> pl.DataFrame:
+    """Snap each point in *poi_gdf* to the nearest forecast grid point.
+
+    Returns forecast rows with the POI's ``name`` and the supplied
+    ``point_type`` (e.g. ``"takeoff"`` or ``"station"``).  This is a
+    small helper shared by takeoff matching and wind-station matching.
+    """
+    poi_gdf = poi_gdf.copy()
+    poi_gdf["latitude_poi"] = poi_gdf.geometry.y
+    poi_gdf["longitude_poi"] = poi_gdf.geometry.x
+    poi_gdf.set_crs(crs, inplace=True)
+
+    joined = gpd.sjoin_nearest(
+        poi_gdf, points_forecast, how="left", max_distance=max_distance
+    )[["name", "longitude_poi", "latitude_poi", "longitude", "latitude"]]
+    joined = joined.drop_duplicates(subset="name")
+    df_poi = pl.DataFrame(joined)
+
+    # Inner join onto the forecast frame and swap the POI's own lat/lon
+    # onto the emitted rows so downstream consumers see the actual
+    # station/takeoff location, not the grid cell centroid.
+    forecasts = (
+        df.join(df_poi, on=["longitude", "latitude"], how="inner")
+        .select(pl.exclude("longitude", "latitude"))
+        .rename({"longitude_poi": "longitude", "latitude_poi": "latitude"})
+        .with_columns(point_type=pl.lit(point_type))
+    )
+    return forecasts
+
+
 def match_takeoffs_to_grid(
     df: pl.DataFrame,
     takeoffs_gdf: gpd.GeoDataFrame,
     areas_gdf: Optional[gpd.GeoDataFrame] = None,
+    stations_gdf: Optional[gpd.GeoDataFrame] = None,
 ) -> pl.DataFrame:
-    """Match forecast grid points to takeoffs and optionally to areas.
+    """Match forecast grid points to takeoffs, areas, and wind stations.
 
     Parameters
     ----------
@@ -314,11 +352,19 @@ def match_takeoffs_to_grid(
     areas_gdf : gpd.GeoDataFrame, optional
         Polygon GeoDataFrame with 'name' column for area aggregation
         (e.g., Norwegian municipalities). If None, area forecasts are skipped.
+    stations_gdf : gpd.GeoDataFrame, optional
+        Point GeoDataFrame with ``name`` / ``geometry`` columns for public
+        wind stations (winds.mobi + met.no Frost).  Each station is
+        snapped to the nearest MEPS grid cell and emitted with
+        ``point_type="station"``.  ``name`` should already be prefixed
+        (see :func:`wind_station_utils.station_name`).  Skipped when
+        ``None`` or empty.
 
     Returns
     -------
     pl.DataFrame
-        Combined takeoff + area forecasts with 'name' and 'point_type' columns.
+        Combined takeoff + area + station forecasts with 'name' and
+        'point_type' columns.
     """
     unique_lat_lon = df.select("longitude", "latitude").unique().to_pandas()
 
@@ -354,24 +400,23 @@ def match_takeoffs_to_grid(
         frames.append(area_forecasts)
 
     # --- Takeoff forecasts ---
-    takeoffs_gdf = takeoffs_gdf.copy()
-    takeoffs_gdf["latitude_takeoff"] = takeoffs_gdf.geometry.y
-    takeoffs_gdf["longitude_takeoff"] = takeoffs_gdf.geometry.x
-    takeoffs_gdf.set_crs(crs, inplace=True)
-
-    takeoffs = gpd.sjoin_nearest(
-        takeoffs_gdf, points_forecast, how="left", max_distance=10000
-    )[["name", "longitude_takeoff", "latitude_takeoff", "longitude", "latitude"]]
-    takeoffs = takeoffs.drop_duplicates(subset="name")
-    df_takeoffs = pl.DataFrame(takeoffs)
-
-    takeoff_forecasts = (
-        df.join(df_takeoffs, on=["longitude", "latitude"], how="inner")
-        .select(pl.exclude("longitude", "latitude"))
-        .rename({"longitude_takeoff": "longitude", "latitude_takeoff": "latitude"})
-        .with_columns(point_type=pl.lit("takeoff"))
+    takeoff_forecasts = _nearest_point_forecasts(
+        df, points_forecast, takeoffs_gdf, crs, point_type="takeoff"
     )
     frames.append(takeoff_forecasts)
+
+    # --- Wind-station forecasts (optional) ---
+    if stations_gdf is not None and len(stations_gdf) > 0:
+        station_forecasts = _nearest_point_forecasts(
+            df, points_forecast, stations_gdf, crs, point_type="station"
+        )
+        if len(station_forecasts) > 0:
+            frames.append(station_forecasts)
+            logger.info(
+                "Matched %d wind stations to grid (%d forecast rows)",
+                stations_gdf["name"].nunique(),
+                len(station_forecasts),
+            )
 
     # Combine — ensure same columns across all frames
     result_cols = takeoff_forecasts.columns
@@ -615,6 +660,7 @@ def run_post_loading_pipeline(
     takeoffs_gdf: gpd.GeoDataFrame,
     areas_gdf: Optional[gpd.GeoDataFrame] = None,
     db: Optional[db_utils.Database] = None,
+    stations_gdf: Optional[gpd.GeoDataFrame] = None,
 ) -> None:
     """Run the full post-loading pipeline: thermals, aggregation, DB write.
 
@@ -635,6 +681,9 @@ def run_post_loading_pipeline(
         Area polygons for spatial aggregation (e.g. Norwegian municipalities).
     db : Database, optional
         Database instance.
+    stations_gdf : gpd.GeoDataFrame, optional
+        Public wind stations (winds.mobi + met.no Frost).  Passed through
+        to :func:`match_takeoffs_to_grid`.
     """
     if db is None:
         db = db_utils.Database()
@@ -649,9 +698,14 @@ def run_post_loading_pipeline(
     # 3. Convert to flat DataFrame
     df = dataset_to_flat_dataframe(altitude_interpolated, forecast_timestamp)
 
-    # 4. Match to takeoffs (and optionally areas)
-    logger.info("Matching to takeoffs...")
-    point_forecasts = match_takeoffs_to_grid(df, takeoffs_gdf, areas_gdf=areas_gdf)
+    # 4. Match to takeoffs, areas, and wind stations
+    logger.info("Matching to takeoffs / areas / stations...")
+    point_forecasts = match_takeoffs_to_grid(
+        df,
+        takeoffs_gdf,
+        areas_gdf=areas_gdf,
+        stations_gdf=stations_gdf,
+    )
     point_forecasts = point_forecasts.with_columns(model_source=pl.lit(model_source))
 
     # 5. Build gridded output

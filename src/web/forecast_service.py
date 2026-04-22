@@ -2100,3 +2100,128 @@ def get_summary(
         f"Thermal top: {row[0, 'thermal_top']:.0f} m | "
         f"Wind: {row[0, 'wind_speed']:.1f} m/s"
     )
+
+
+# ---------------------------------------------------------------------------
+# Wind-station forecast (TASK-360)
+# ---------------------------------------------------------------------------
+
+# Station forecasts are at a single altitude (grid cell ground level) so
+# cache per station_id across the whole life of a forecast run.
+_STATION_FORECAST_CACHE: dict[str, CacheEntry[dict[str, Any]]] = {}
+_STATION_FORECAST_TTL = 600  # 10 minutes — cheap indexed SELECT anyway
+
+
+def _normalize_station_id(station_id: str) -> str:
+    """Map an externally-provided station id onto the DB ``name`` column.
+
+    The preprocess pipeline stores station rows with ``name`` prefixed as
+    ``station:<provider>:<id>`` (see ``wind_station_utils.station_name``).
+    Callers that pass the bare id ("holfuy-1013") or the pgpilot-style id
+    ("frost:SN18700") are transparently mapped to the canonical form.
+    """
+    sid = station_id.strip()
+    if sid.startswith("station:"):
+        return sid
+    if sid.startswith("frost:"):
+        # pgpilot uses bare "frost:SN18700"; prepend "station:" to match DB.
+        return f"station:{sid}"
+    # winds.mobi ids look like "holfuy-1013", "pioupiou-123" etc.
+    return f"station:winds-mobi:{sid}"
+
+
+def get_station_forecast(
+    station_id: str,
+    model_source: str | None = None,
+) -> Optional[dict[str, Any]]:
+    """Return the precomputed MEPS forecast for a wind station.
+
+    Performs a cheap indexed SELECT against ``detailed_forecasts`` and
+    returns the TASK-360 contract payload (see ``StationForecastResponse``).
+
+    Returns ``None`` when no rows match — the caller should translate
+    that into a 404 response.
+    """
+    ms = model_source or settings.default_model_source
+    canonical_name = _normalize_station_id(station_id)
+    cache_key = f"{ms}|{canonical_name}"
+
+    cached = _STATION_FORECAST_CACHE.get(cache_key)
+    if cached is not None and cached.is_fresh(_STATION_FORECAST_TTL):
+        return cached.data
+
+    # Use the lowest altitude row per time.  Stations are at ground level
+    # so the smallest altitude bin (typically 0 m AGL) is what pilots
+    # care about.  A single CTE keeps this to one round-trip.
+    query = f"""
+    WITH station_rows AS (
+        SELECT forecast_timestamp, time, latitude, longitude, altitude,
+               x_wind_ml, y_wind_ml, wind_speed
+        FROM detailed_forecasts
+        WHERE model_source = '{ms}'
+          AND point_type = 'station'
+          AND name = '{canonical_name}'
+    ),
+    latest AS (
+        SELECT max(forecast_timestamp) AS ts,
+               min(altitude) AS alt
+        FROM station_rows
+    )
+    SELECT s.forecast_timestamp, s.time, s.latitude, s.longitude,
+           s.x_wind_ml, s.y_wind_ml, s.wind_speed
+    FROM station_rows s, latest l
+    WHERE s.forecast_timestamp = l.ts
+      AND s.altitude = l.alt
+    ORDER BY s.time
+    """
+    try:
+        df = _db.read(query)
+    except Exception:
+        logger.exception("Station forecast query failed for %s", canonical_name)
+        return None
+
+    if len(df) == 0:
+        return None
+
+    forecast_issued = df[0, "forecast_timestamp"]
+    if isinstance(forecast_issued, dt.datetime) and forecast_issued.tzinfo is None:
+        forecast_issued = forecast_issued.replace(tzinfo=dt.timezone.utc)
+
+    lat = float(df[0, "latitude"])
+    lon = float(df[0, "longitude"])
+
+    samples: list[dict[str, Any]] = []
+    for row in df.iter_rows(named=True):
+        ts = row["time"]
+        if isinstance(ts, dt.datetime) and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=dt.timezone.utc)
+        wind_speed = float(row["wind_speed"])
+        wind_dir = _wind_direction_from_components(
+            float(row["x_wind_ml"]), float(row["y_wind_ml"])
+        )
+        samples.append(
+            {
+                "t": ts.isoformat(),
+                "wind_speed": round(wind_speed, 2),
+                "wind_dir": round(wind_dir, 1),
+                # MEPS ML output doesn't carry a gust diagnostic; leave None
+                # so the frontend can fall back to avg-only until a gust
+                # source is wired in.
+                "wind_gust": None,
+            }
+        )
+
+    payload = {
+        "station_id": station_id,
+        "lat": lat,
+        "lon": lon,
+        "forecast_issued": forecast_issued.isoformat()
+        if isinstance(forecast_issued, dt.datetime)
+        else str(forecast_issued),
+        "samples": samples,
+    }
+
+    _STATION_FORECAST_CACHE[cache_key] = CacheEntry(
+        loaded_at=dt.datetime.now(dt.timezone.utc), data=payload
+    )
+    return payload
