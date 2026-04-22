@@ -25,6 +25,7 @@ load_dotenv()
 
 import db_utils
 import takeoff_utils
+import wind_station_utils
 
 # Re-export from refactored modules for backward compatibility
 from src.preprocessing.base import (
@@ -99,6 +100,18 @@ if __name__ == "__main__":
         areas_gdf = gpd.read_file(geojson_path)[["geometry", "name"]]
         takeoffs_gdf = takeoff_utils.fetch_takeoffs_norway()
 
+        # Refresh the public wind-station catalog (winds.mobi + Frost) so
+        # MEPS forecasts are interpolated at each station and the frontend
+        # can render a forecast timeline next to historical observations.
+        # Empty catalog is fine — the pipeline skips the station pass.
+        try:
+            stations_gdf = wind_station_utils.fetch_wind_station_catalog()
+        except Exception:
+            logger.exception(
+                "Wind-station catalog refresh failed — continuing without."
+            )
+            stations_gdf = None
+
         # Run the full post-loading pipeline
         run_post_loading_pipeline(
             subset=subset,
@@ -107,4 +120,5 @@ if __name__ == "__main__":
             takeoffs_gdf=takeoffs_gdf,
             areas_gdf=areas_gdf,
             db=db,
+            stations_gdf=stations_gdf,
         )

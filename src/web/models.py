@@ -284,3 +284,37 @@ class SummaryRequest(BaseModel):
     selected_time: dt.datetime
     forecast_timestamp: Optional[dt.datetime] = None
     model_source: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Wind-station forecast (TASK-360)
+# ---------------------------------------------------------------------------
+
+
+class StationForecastSample(BaseModel):
+    """One forecast sample for a wind-station timeline.
+
+    Field names are FROZEN by the TASK-360 contract — do not rename.
+    """
+
+    t: str
+    wind_speed: float
+    wind_dir: float
+    wind_gust: Optional[float] = None
+
+
+class StationForecastResponse(BaseModel):
+    """Response body for ``GET /api/forecast?station_id=<id>``.
+
+    Field names are FROZEN by the TASK-360 contract — do not rename.
+    The ``model`` field is an additive extension added in Track A
+    follow-up so pilots can see which weather model produced the
+    samples (e.g. ``"meps"`` vs ``"icon-eu"``).
+    """
+
+    station_id: str
+    lat: float
+    lon: float
+    forecast_issued: str
+    model: Optional[str] = None
+    samples: list[StationForecastSample]

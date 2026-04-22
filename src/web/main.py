@@ -4,8 +4,9 @@ import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -19,6 +20,7 @@ from .models import (
     MapPayloadRequest,
     MapPayloadResponse,
     MetaResponse,
+    StationForecastResponse,
     SummaryRequest,
     SummaryResponse,
 )
@@ -120,6 +122,33 @@ def frontend_summary(payload: SummaryRequest) -> SummaryResponse:
         forecast_ts=payload.forecast_timestamp,
         model_source=payload.model_source,
     )
+
+
+@app.get("/api/forecast", response_model=StationForecastResponse)
+@app.get("/forecast", response_model=StationForecastResponse)
+def station_forecast(
+    station_id: str = Query(
+        ..., description="Station id, e.g. 'holfuy-1013' or 'frost:SN18700'"
+    ),
+    model_source: Optional[str] = Query(
+        None,
+        description="Weather model source; defaults to settings.default_model_source",
+    ),
+) -> StationForecastResponse:
+    """Return the precomputed MEPS forecast for a wind station (TASK-360).
+
+    Field names are FROZEN by the task contract — callers in the pgpilot
+    frontend and backend depend on the exact shape.
+    """
+    payload = forecast_service.get_station_forecast(
+        station_id=station_id, model_source=model_source
+    )
+    if payload is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No forecast found for station_id='{station_id}'",
+        )
+    return StationForecastResponse(**payload)
 
 
 @app.get("/{full_path:path}")
