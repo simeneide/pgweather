@@ -2134,17 +2134,26 @@ def get_station_forecast(
     station_id: str,
     model_source: str | None = None,
 ) -> Optional[dict[str, Any]]:
-    """Return the precomputed MEPS forecast for a wind station.
+    """Return the precomputed forecast for a wind station.
 
-    Performs a cheap indexed SELECT against ``detailed_forecasts`` and
-    returns the TASK-360 contract payload (see ``StationForecastResponse``).
+    Queries every ``model_source`` present in ``detailed_forecasts`` for
+    the station, picks the one with the newest ``forecast_timestamp``,
+    and returns its samples.  The resulting model name is echoed back in
+    the payload (TASK-360 Track A follow-up).
+
+    When ``model_source`` is passed explicitly, only that model is
+    considered (back-compat for callers that want to pin a specific
+    model, e.g. MEPS-only tests).
 
     Returns ``None`` when no rows match — the caller should translate
     that into a 404 response.
     """
-    ms = model_source or settings.default_model_source
     canonical_name = _normalize_station_id(station_id)
-    cache_key = f"{ms}|{canonical_name}"
+    # Cache key must disambiguate "any model, pick freshest" from
+    # "pinned to <model>" so switching between the two doesn't return
+    # stale data.
+    ms_cache_tag = model_source if model_source else "*"
+    cache_key = f"{ms_cache_tag}|{canonical_name}"
 
     cached = _STATION_FORECAST_CACHE.get(cache_key)
     if cached is not None and cached.is_fresh(_STATION_FORECAST_TTL):
@@ -2152,26 +2161,42 @@ def get_station_forecast(
 
     # Use the lowest altitude row per time.  Stations are at ground level
     # so the smallest altitude bin (typically 0 m AGL) is what pilots
-    # care about.  A single CTE keeps this to one round-trip.
+    # care about.  The CTE picks the row with the newest
+    # forecast_timestamp across all model_sources (unless one is pinned)
+    # so a freshly-updated ICON-EU run beats a stale MEPS run for the
+    # same station.
+    if model_source:
+        model_filter = f"AND model_source = '{model_source}'"
+    else:
+        model_filter = ""
+
     query = f"""
     WITH station_rows AS (
-        SELECT forecast_timestamp, time, latitude, longitude, altitude,
-               x_wind_ml, y_wind_ml, wind_speed
+        SELECT model_source, forecast_timestamp, time, latitude, longitude,
+               altitude, x_wind_ml, y_wind_ml, wind_speed
         FROM detailed_forecasts
-        WHERE model_source = '{ms}'
-          AND point_type = 'station'
+        WHERE point_type = 'station'
           AND name = '{canonical_name}'
+          {model_filter}
     ),
     latest AS (
-        SELECT max(forecast_timestamp) AS ts,
-               min(altitude) AS alt
+        SELECT model_source, forecast_timestamp
         FROM station_rows
+        ORDER BY forecast_timestamp DESC
+        LIMIT 1
+    ),
+    latest_alt AS (
+        SELECT min(s.altitude) AS alt
+        FROM station_rows s, latest l
+        WHERE s.model_source = l.model_source
+          AND s.forecast_timestamp = l.forecast_timestamp
     )
-    SELECT s.forecast_timestamp, s.time, s.latitude, s.longitude,
+    SELECT s.model_source, s.forecast_timestamp, s.time, s.latitude, s.longitude,
            s.x_wind_ml, s.y_wind_ml, s.wind_speed
-    FROM station_rows s, latest l
-    WHERE s.forecast_timestamp = l.ts
-      AND s.altitude = l.alt
+    FROM station_rows s, latest l, latest_alt la
+    WHERE s.model_source = l.model_source
+      AND s.forecast_timestamp = l.forecast_timestamp
+      AND s.altitude = la.alt
     ORDER BY s.time
     """
     try:
@@ -2186,6 +2211,8 @@ def get_station_forecast(
     forecast_issued = df[0, "forecast_timestamp"]
     if isinstance(forecast_issued, dt.datetime) and forecast_issued.tzinfo is None:
         forecast_issued = forecast_issued.replace(tzinfo=dt.timezone.utc)
+
+    resolved_model_source = df[0, "model_source"]
 
     lat = float(df[0, "latitude"])
     lon = float(df[0, "longitude"])
@@ -2218,6 +2245,7 @@ def get_station_forecast(
         "forecast_issued": forecast_issued.isoformat()
         if isinstance(forecast_issued, dt.datetime)
         else str(forecast_issued),
+        "model": resolved_model_source,
         "samples": samples,
     }
 

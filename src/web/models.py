@@ -307,10 +307,14 @@ class StationForecastResponse(BaseModel):
     """Response body for ``GET /api/forecast?station_id=<id>``.
 
     Field names are FROZEN by the TASK-360 contract — do not rename.
+    The ``model`` field is an additive extension added in Track A
+    follow-up so pilots can see which weather model produced the
+    samples (e.g. ``"meps"`` vs ``"icon-eu"``).
     """
 
     station_id: str
     lat: float
     lon: float
     forecast_issued: str
+    model: Optional[str] = None
     samples: list[StationForecastSample]

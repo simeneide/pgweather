@@ -245,8 +245,20 @@ def parse_station_name(name: str) -> Optional[tuple[str, str]]:
     return provider, sid
 
 
-def fetch_wind_station_catalog() -> gpd.GeoDataFrame:
+def fetch_wind_station_catalog(
+    bbox: Optional[tuple[float, float, float, float]] = None,
+) -> gpd.GeoDataFrame:
     """Fetch the combined wind-station catalog and return it as a GeoDataFrame.
+
+    Parameters
+    ----------
+    bbox
+        Optional ``(min_lat, max_lat, min_lon, max_lon)`` to restrict the
+        catalog to a specific region.  Defaults to :data:`MEPS_BBOX`.
+        Useful for ICON-EU which covers a different region than MEPS; in
+        practice the caller should pass the pipeline's own lat/lon
+        bounds so we don't interpolate over stations outside the model
+        domain.
 
     The returned frame has the same column layout as
     :func:`takeoff_utils.fetch_takeoffs`:
@@ -259,9 +271,12 @@ def fetch_wind_station_catalog() -> gpd.GeoDataFrame:
 
     Duplicates across providers are dropped on the composite name.
     """
+    effective_bbox = bbox or MEPS_BBOX
     records: list[dict] = []
 
-    for s in fetch_winds_mobi_stations():
+    for s in fetch_winds_mobi_stations(bbox=effective_bbox):
+        if not _in_bbox(s["lat"], s["lon"], effective_bbox):
+            continue
         records.append(
             {
                 "name": station_name("winds-mobi", s["id"]),
@@ -274,6 +289,8 @@ def fetch_wind_station_catalog() -> gpd.GeoDataFrame:
         )
 
     for s in fetch_frost_stations():
+        if not _in_bbox(s["lat"], s["lon"], effective_bbox):
+            continue
         records.append(
             {
                 "name": station_name("frost", s["id"]),

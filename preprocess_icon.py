@@ -23,6 +23,7 @@ load_dotenv()
 
 import db_utils
 import takeoff_utils
+import wind_station_utils
 from src.preprocessing.base import run_post_loading_pipeline
 from src.preprocessing.icon import (
     find_latest_icon_eu_run,
@@ -118,6 +119,19 @@ def run_icon_eu_pipeline(
     # No area aggregation for non-Norwegian regions (no municipality GeoJSON)
     areas_gdf = None
 
+    # Refresh the public wind-station catalog (winds.mobi + Frost) for the
+    # region bbox so ICON-EU forecasts are interpolated at each station.
+    # We pass the region's own lat/lon bounds to avoid interpolating over
+    # stations far outside this ICON-EU sub-domain.
+    lat_bounds = region_config["lat_bounds"]
+    lon_bounds = region_config["lon_bounds"]
+    region_bbox = (lat_bounds[0], lat_bounds[1], lon_bounds[0], lon_bounds[1])
+    try:
+        stations_gdf = wind_station_utils.fetch_wind_station_catalog(bbox=region_bbox)
+    except Exception:
+        logger.exception("Wind-station catalog refresh failed — continuing without.")
+        stations_gdf = None
+
     # Run shared pipeline
     run_post_loading_pipeline(
         subset=subset,
@@ -126,6 +140,7 @@ def run_icon_eu_pipeline(
         takeoffs_gdf=takeoffs_gdf,
         areas_gdf=areas_gdf,
         db=db,
+        stations_gdf=stations_gdf,
     )
 
     logger.info("ICON-EU pipeline complete for region=%s", region)
