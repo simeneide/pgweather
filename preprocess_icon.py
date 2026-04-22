@@ -84,7 +84,23 @@ def run_icon_eu_pipeline(
     if max_ts is not None and hasattr(max_ts, "tzinfo") and max_ts.tzinfo is None:
         max_ts = max_ts.replace(tzinfo=dt.timezone.utc)
     if max_ts is not None and max_ts >= init_time:
-        if os.getenv("TRIGGER_SOURCE") != "push":
+        # Re-run anyway if the latest forecast has no station rows yet —
+        # this lets the Track-A station backfill land on the next cron
+        # tick without having to wait for a fresh upstream ICON-EU run.
+        stations_missing = False
+        try:
+            station_count = db.read(
+                "SELECT count(*) AS n FROM detailed_forecasts"
+                f" WHERE model_source = '{model_source}'"
+                f" AND forecast_timestamp = '{max_ts.isoformat()}'"
+                " AND point_type = 'station'"
+            )
+            stations_missing = int(station_count[0, "n"]) == 0
+        except Exception:
+            logger.exception("Station-count precheck failed — proceeding as normal.")
+            stations_missing = False
+
+        if os.getenv("TRIGGER_SOURCE") != "push" and not stations_missing:
             logger.info(
                 "ICON-EU forecast %s already in DB (latest: %s). Skipping.",
                 forecast_timestamp,

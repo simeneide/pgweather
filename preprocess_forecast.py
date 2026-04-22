@@ -83,7 +83,28 @@ if __name__ == "__main__":
         max_forecast_timestamp >= forecast_timestamp_datetime
     )
 
-    if no_new_forecast_exists and (os.getenv("TRIGGER_SOURCE") != "push"):
+    # Re-run anyway if the latest forecast has no station rows yet — this
+    # lets the Track-A station backfill land on the next cron tick without
+    # having to wait for a fresh upstream MEPS run.
+    stations_missing = False
+    if no_new_forecast_exists:
+        try:
+            station_count = db.read(
+                "SELECT count(*) AS n FROM detailed_forecasts"
+                f" WHERE model_source = '{MODEL_SOURCE}'"
+                f" AND forecast_timestamp = '{max_forecast_timestamp.isoformat()}'"
+                " AND point_type = 'station'"
+            )
+            stations_missing = int(station_count[0, "n"]) == 0
+        except Exception:
+            logger.exception("Station-count precheck failed — proceeding as normal.")
+            stations_missing = False
+
+    if (
+        no_new_forecast_exists
+        and not stations_missing
+        and (os.getenv("TRIGGER_SOURCE") != "push")
+    ):
         logger.info(
             "Forecast timestamp: %s, Last executed: %s, Trigger: %s",
             forecast_timestamp_datetime,
