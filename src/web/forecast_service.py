@@ -8,6 +8,7 @@ Data loading uses per-view queries instead of a monolithic bulk load:
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime as dt
 import json
 import logging
@@ -195,6 +196,35 @@ _YR_ICON_PNG_BASE = (
     "https://raw.githubusercontent.com/metno/weathericons/main/weather/png"
 )
 _YR_USER_AGENT = "pgweather/1.0 github.com/simeneide/pgweather"
+
+
+def prewarm_yr_cache() -> None:
+    """Pre-fetch Yr forecasts for all takeoff locations in parallel.
+
+    Called from startup so the Yr cache is warm before the first airgram
+    request.  Each call is independent, so we fan out with a thread pool.
+    """
+    try:
+        meta = load_metadata()
+    except Exception:
+        logger.warning("Cannot pre-warm Yr cache: metadata not available yet")
+        return
+
+    takeoffs = [t for t in meta.takeoffs if t.point_type != "area"]
+    if not takeoffs:
+        return
+
+    def _fetch(t: TakeoffInfo) -> None:
+        try:
+            _fetch_yr_forecast(t.latitude, t.longitude)
+        except Exception:
+            pass
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        pool.map(_fetch, takeoffs)
+
+    logger.info("Yr cache pre-warmed for %d takeoffs", len(takeoffs))
+
 
 # ---------------------------------------------------------------------------
 # Cached latest forecast timestamp (short TTL, shared across queries)
@@ -711,22 +741,38 @@ def build_airgram_payload(
 ) -> AirgramPayloadResponse:
     ms = model_source or settings.default_model_source
     resolved_ts = _resolve_forecast_ts(forecast_ts, model_source=ms)
-    yr_entries = get_yr_weather_for_day(
-        target_name,
-        selected_date,
-        restrict_to_hours=get_forecast_hours_for_day(
-            target_name,
-            selected_date,
-            forecast_ts=resolved_ts,
-            model_source=ms,
-        ),
-        model_source=ms,
-    )
 
+    # Load windgram data first (needed to determine forecast hours for Yr).
     location_data = load_windgram_data(
         target_name,
         selected_date,
         forecast_ts=resolved_ts,
+        model_source=ms,
+    )
+
+    # Derive available hours from already-loaded data instead of querying again.
+    if len(location_data) == 0:
+        restrict_hours: list[int] = []
+    else:
+        restrict_hours = (
+            location_data.with_columns(
+                time=pl.col("time").dt.convert_time_zone("Europe/Oslo")
+            )
+            .select(pl.col("time").dt.hour().alias("hour"))
+            .unique()
+            .sort("hour")
+            .get_column("hour")
+            .to_list()
+        )
+
+    # Kick off Yr fetch in a background thread so it overlaps with data
+    # processing below (Yr API can take several seconds on cache miss).
+    _yr_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    yr_future = _yr_executor.submit(
+        get_yr_weather_for_day,
+        target_name,
+        selected_date,
+        restrict_to_hours=restrict_hours,
         model_source=ms,
     )
 
@@ -739,6 +785,8 @@ def build_airgram_payload(
     )
 
     if len(location_data) == 0:
+        yr_future.cancel()
+        _yr_executor.shutdown(wait=False)
         return AirgramPayloadResponse(
             location=target_name,
             date=selected_date.isoformat(),
@@ -839,6 +887,10 @@ def build_airgram_payload(
                     thermal_velocity=float(row["thermal_velocity"]),
                 )
             )
+
+    # Collect Yr results (blocks here if the API call hasn't finished yet).
+    yr_entries = yr_future.result(timeout=6)
+    _yr_executor.shutdown(wait=False)
 
     yr_payload: list[AirgramYrPoint] = []
     for entry in yr_entries:
@@ -1135,7 +1187,7 @@ def _fetch_yr_forecast(lat: float, lon: float) -> list[dict]:
         f"?lat={lat:.4f}&lon={lon:.4f}"
     )
     try:
-        resp = requests.get(url, headers={"User-Agent": _YR_USER_AGENT}, timeout=10)
+        resp = requests.get(url, headers={"User-Agent": _YR_USER_AGENT}, timeout=5)
         resp.raise_for_status()
         timeseries = resp.json()["properties"]["timeseries"]
     except Exception:
